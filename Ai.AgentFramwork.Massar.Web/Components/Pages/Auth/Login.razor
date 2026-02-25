@@ -1,0 +1,88 @@
+﻿@page "/login"
+@using System.ComponentModel.DataAnnotations
+@using Microsoft.AspNetCore.Authorization
+@attribute [AllowAnonymous]
+
+<MudContainer MaxWidth="MaxWidth.Small"
+              Class="d-flex align-center justify-center"
+              Style="min-height: calc(100vh - 64px);">
+
+    <MudPaper Elevation="8" Class="pa-6" Style="width: 100%; border-radius: 18px;">
+        <MudStack Spacing="3">
+            <MudStack Row AlignItems="AlignItems.Center" Spacing="2">
+                <MudIcon Icon="@Icons.Material.Filled.AdminPanelSettings" Size="Size.Large"/>
+                <MudStack Spacing="0">
+                    <MudText Typo="Typo.h5">Sign in</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        Enter your credentials to continue
+                    </MudText>
+                </MudStack>
+            </MudStack>
+
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error" Variant="Variant.Filled" Dense="true">
+                    @_error
+                </MudAlert>
+            }
+
+            <!-- IMPORTANT: Real browser POST so Set-Cookie is stored in the browser -->
+            <form method="post" action="/auth/login">
+                <MudStack Spacing="2">
+                    <MudTextField @bind-Value="_model.UserOrEmail"
+                                  Label="Username or Email"
+                                  Variant="Variant.Outlined"
+                                  Required="true"
+                                  Immediate="true"/>
+
+                    <MudTextField @bind-Value="_model.Password"
+                                  Label="Password"
+                                  Variant="Variant.Outlined"
+                                  Required="true"
+                                  Immediate="true"
+                                  InputType="@(_showPassword ? InputType.Text : InputType.Password)">
+                        <AdornmentEnd>
+                            <MudIconButton Icon="@(_showPassword ? Icons.Material.Filled.VisibilityOff : Icons.Material.Filled.Visibility)"
+                                           Edge="Edge.End"
+                                           OnClick="@(() => _showPassword = !_showPassword)"/>
+                        </AdornmentEnd>
+                    </MudTextField>
+
+                    <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <MudCheckBox T="bool" @bind-Checked="_model.RememberMe" Label="Remember me"/>
+                        <MudLink Href="/forgot-password" Typo="Typo.body2">Forgot password?</MudLink>
+                    </MudStack>
+
+                    <!-- Submit button MUST be a real submit -->
+                    <MudButton HtmlTag="button"
+                               ButtonType="ButtonType.Submit"
+                               Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               FullWidth="true">
+                        Sign in
+                    </MudButton>
+
+                    <!-- Hidden fields posted to /auth/login -->
+                    <input type="hidden" name="UserOrEmail" value="@_model.UserOrEmail"/>
+                    <input type="hidden" name="Password" value="@_model.Password"/>
+                    <input type="hidden" name="RememberMe" value="@_model.RememberMe.ToString().ToLower()"/>
+                </MudStack>
+            </form>
+        </MudStack>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private bool _showPassword;
+    private string? _error;
+
+    private readonly LoginModel _model = new();
+
+    public sealed class LoginModel
+    {
+        [Required] public string UserOrEmail { get; set; } = "";
+        [Required] public string Password { get; set; } = "";
+        public bool RememberMe { get; set; } = true;
+    }
+
+}

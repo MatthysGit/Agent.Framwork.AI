@@ -1,0 +1,84 @@
+﻿@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Ai.AgentFramwork.Massar.Web.Services.Teams
+@inject ITeamAdminService TeamService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.subtitle1">Add Role to Team</MudText>
+
+            <MudAutocomplete T="Role"
+                             Label="Role"
+                             Dense="true"
+                             Clearable="true"
+                             CoerceText="true"
+                             ResetValueOnEmptyText="false"
+                             ToStringFunc="@(r => r?.Name)"
+                             SearchFunc="SearchRolesAsync"
+                             @bind-Value="_selectedRole"
+                             @bind-Text="_roleText"/>
+
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                Type to search existing roles. If it doesn't exist, it will be created and added to the team.
+            </MudText>
+
+            <MudSwitch T="bool" Dense="true" Value="_isActive" Color="Color.Success">
+                Active
+            </MudSwitch>
+        </MudStack>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="OnCancel">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="_saving" OnClick="OnSaveAsync">Add</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public int TeamId { get; set; }
+
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    private Role? _selectedRole;
+    private string _roleText = string.Empty;
+    private readonly bool _isActive = true;
+    private bool _saving;
+
+    private async Task<IEnumerable<Role>> SearchRolesAsync(string value, CancellationToken ct)
+    {
+        var list = await TeamService.SearchRolesAsync(value, 20, ct);
+        return list;
+    }
+
+    private void OnCancel()
+    {
+        MudDialog.Cancel();
+    }
+
+    private async Task OnSaveAsync()
+    {
+        var name = _selectedRole?.Name ?? _roleText;
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            Snackbar.Add("Role is required.", Severity.Warning);
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            await TeamService.AddRoleToTeamByNameAsync(TeamId, name.Trim(), _isActive);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.GetBaseException().Message, Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+}

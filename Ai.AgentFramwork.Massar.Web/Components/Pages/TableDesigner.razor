@@ -1,0 +1,532 @@
+﻿@page "/table-designer"
+@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject IDialogService Dialog
+@inject ISnackbar Snackbar
+
+<div style="position:relative;">
+    <MudOverlay Visible="_loading" DarkBackground="true" AutoClose="false">
+        <MudPaper Class="pa-6" Elevation="8" Style="min-width:260px;">
+            <MudStack AlignItems="AlignItems.Center" Spacing="2">
+                <MudProgressCircular Indeterminate Size="Size.Large" />
+                <MudText Typo="Typo.subtitle1">@_loadingText</MudText>
+            </MudStack>
+        </MudPaper>
+    </MudOverlay>
+
+    <MudGrid Spacing="2">
+        <!-- LEFT: tables -->
+        <MudItem xs="12" md="4" lg="3">
+            <MudPaper Class="pa-3" Elevation="1">
+
+                <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                    @* <MudText Typo="Typo.subtitle2">Tables</MudText> *@
+                    <MudButton Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               Size="Size.Small"
+                               OnClick="NewTable">
+                        + Add
+                    </MudButton>
+                </MudStack>
+
+                <MudTextField @bind-Value="_search"
+                              Placeholder="Search..."
+                              Typo="Typo.caption"
+                              Immediate="true"
+                              Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search"
+                              Class="mt-2" />
+
+                <MudDivider Class="my-2" />
+
+                <!-- NOW USING MudDataGrid (same style as right side) -->
+                <MudDataGrid T="TableDefinition"
+                             Items="FilteredTables"
+                             Dense="true"
+                             Hover="true"
+                             Elevation="0"
+                             Bordered="true"
+                             Height="65vh"
+                             RowClick="@(e => SelectTable(e.Item.Name))">
+
+                    <Columns>
+                        <PropertyColumn Property="x => x.Name" Title="Tables" />
+
+                        <TemplateColumn Title="" StickyRight="true" CellClass="actions-cell d-flex justify-end">
+                            <CellTemplate Context="ctx">
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit"
+                                               Size="Size.Small"
+                                               StopPropagation="true"
+                                               OnClick="@(() => EditTable(ctx.Item.Name))" />
+
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                               Size="Size.Small"
+                                               Color="Color.Error"
+                                               StopPropagation="true"
+                                               OnClick="@(() => DeleteTable(ctx.Item.Name))" />
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+
+                </MudDataGrid>
+
+            </MudPaper>
+        </MudItem>
+
+        <!-- RIGHT: designer -->
+        <MudItem xs="12" md="8" lg="9">
+            <MudPaper Class="pa-3" Elevation="1" Style="min-height: 70vh;">
+                @if (_selected is null)
+                {
+                    <MudText Color="Color.Secondary">
+                        Select a table on the left (or add one).
+                    </MudText>
+                }
+                else
+                {
+                    <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <MudText Typo="Typo.subtitle2">Design: @_selected.Name</MudText>
+
+                        <MudButton Variant="Variant.Outlined"
+                                   Size="Size.Small"
+                                   OnClick="ReloadSelectedWithLoader">
+                            Refresh
+                        </MudButton>
+                    </MudStack>
+
+                    <MudDivider Class="my-2" />
+
+                    <MudTextField Label="Table Name"
+                                  Style="font-size:smaller"
+                                  Value="@_selected.Name"
+                                  Disabled="true" />
+
+                    <MudTextField Label="Definition"
+                                  Style="font-size:smaller"
+                                  @bind-Value="_selected.Definition"
+                                  Lines="4" />
+
+                    <MudStack Row Class="mt-2" Justify="Justify.FlexEnd">
+                        <MudButton Variant="Variant.Filled"
+                                   Color="Color.Primary"
+                                   OnClick="SaveTableDefinition">
+                            Save Table
+                        </MudButton>
+                    </MudStack>
+
+                    <MudDivider Class="my-3" />
+
+                    <MudTabs Rounded="true"
+                             ApplyEffectsToContainer="true"
+                             PanelClass="pt-2">
+
+                        <!-- Fields -->
+                        <MudTabPanel Text="Fields">
+                            <MudStack Row AlignItems="AlignItems.Center"
+                                      Justify="Justify.SpaceBetween"
+                                      Class="mb-2">
+
+                                <MudText Typo="Typo.subtitle2">
+                                    TableFieldDefinition
+                                </MudText>
+
+                                <MudButton Variant="Variant.Filled"
+                                           Size="Size.Small"
+                                           OnClick="NewField">
+                                    + Add Field
+                                </MudButton>
+                            </MudStack>
+
+                            <MudDataGrid T="TableFieldDefinition"
+                                         Items="_fields"
+                                         Dense="true"
+                                         Hover="true"
+                                         Elevation="0"
+                                         Bordered="true"
+                                         Height="380px">
+                                <Columns>
+                                    <PropertyColumn Property="x => x.column_name" Title="Column" />
+                                    <PropertyColumn Property="x => x.data_type" Title="Data Type" />
+                                    <PropertyColumn Property="x => x.definition" Title="Definition" />
+
+                                    <TemplateColumn Title="" StickyRight="true" CellClass="actions-cell d-flex justify-end">
+                                        <CellTemplate Context="ctx">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit"
+                                                           Size="Size.Small"
+                                                           OnClick="@(() => EditField(ctx.Item.table_name, ctx.Item.column_name))" />
+
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                                           Size="Size.Small"
+                                                           Color="Color.Error"
+                                                           OnClick="@(() => DeleteField(ctx.Item.table_name, ctx.Item.column_name))" />
+                                        </CellTemplate>
+                                    </TemplateColumn>
+                                </Columns>
+                            </MudDataGrid>
+                        </MudTabPanel>
+
+                        <!-- References -->
+                        <MudTabPanel Text="References">
+                            <MudStack Row AlignItems="AlignItems.Center"
+                                      Justify="Justify.SpaceBetween"
+                                      Class="mb-2">
+
+                                <MudText Typo="Typo.subtitle2">
+                                    TableReferencing
+                                </MudText>
+
+                                <MudButton Variant="Variant.Filled"
+                                           Size="Size.Small"
+                                           OnClick="NewReference">
+                                    + Add Reference
+                                </MudButton>
+                            </MudStack>
+
+                            <MudDataGrid T="TableReferencing"
+                                         Items="_refs"
+                                         Dense="true"
+                                         Hover="true"
+                                         Elevation="0"
+                                         Bordered="true"
+                                         Height="380px">
+                                <Columns>
+                                    <PropertyColumn Property="x => x.id" Title="Id" />
+                                    <PropertyColumn Property="x => x.table_name" Title="Table" />
+                                    <PropertyColumn Property="x => x.referencing_table_name" Title="Referencing Table" />
+                                    <PropertyColumn Property="x => x.referencing_column_name" Title="Referencing Column" />
+
+                                    <TemplateColumn Title="" StickyRight="true" CellClass="actions-cell d-flex justify-end">
+                                        <CellTemplate Context="ctx">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit"
+                                                           Size="Size.Small"
+                                                           OnClick="@(() => EditReference(ctx.Item.id))" />
+
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                                           Size="Size.Small"
+                                                           Color="Color.Error"
+                                                           OnClick="@(() => DeleteReference(ctx.Item.id))" />
+                                        </CellTemplate>
+                                    </TemplateColumn>
+                                </Columns>
+                            </MudDataGrid>
+                        </MudTabPanel>
+
+                    </MudTabs>
+                }
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+</div>
+
+@code {
+    private bool _loading;
+    private string _loadingText = "Loading...";
+    private List<TableDefinition> _tables = new();
+    private string _search = "";
+    private TableDefinition? _selected;
+
+    private List<TableFieldDefinition> _fields = new();
+    private List<TableReferencing> _refs = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RunWithLoader("Loading tables...", async () =>
+        {
+            await LoadTables();
+
+            if (_selected is null && _tables.Count > 0)
+                await SelectTable(_tables[0].Name);
+        });
+    }
+
+    private IEnumerable<TableDefinition> FilteredTables =>
+        string.IsNullOrWhiteSpace(_search)
+            ? _tables
+            : _tables.Where(t => t.Name.Contains(_search, StringComparison.OrdinalIgnoreCase));
+
+    private async Task LoadTables()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _tables = await db.TableDefinitions
+            .OrderBy(x => x.Name)
+            .ToListAsync();
+    }
+
+    private async Task SelectTable(string name)
+    {
+        await RunWithLoader($"Loading {name}...", async () =>
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            _selected = await db.TableDefinitions.FirstOrDefaultAsync(x => x.Name == name);
+            await ReloadSelected();
+        });
+    }
+
+    private async Task ReloadSelectedWithLoader()
+    {
+        if (_selected is null) return;
+        await RunWithLoader("Refreshing...", ReloadSelected);
+    }
+
+    private async Task RunWithLoader(string text, Func<Task> work)
+    {
+        _loading = true;
+        _loadingText = text;
+        StateHasChanged();
+
+        try
+        {
+            await work();
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ReloadSelected()
+    {
+        if (_selected is null) return;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        _selected = await db.TableDefinitions.FirstAsync(x => x.Name == _selected.Name);
+
+        _fields = await db.TableFieldDefinitions
+            .Where(f => f.table_name == _selected.Name)
+            .OrderBy(f => f.column_name)
+            .ToListAsync();
+
+        _refs = await db.TableReferencings
+            .Where(r => r.table_name == _selected.Name)
+            .OrderByDescending(r => r.id)
+            .ToListAsync();
+    }
+
+    private async Task SaveTableDefinition()
+    {
+        if (_selected is null) return;
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            db.TableDefinitions.Update(_selected);
+            await db.SaveChangesAsync();
+            Snackbar.Add("Table saved.", Severity.Success);
+
+            await LoadTables();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Save failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    // ---------------- Tables ----------------
+    private async Task NewTable()
+    {
+        var parameters = new DialogParameters
+        {
+            ["Model"] = new TableDefinition()
+        };
+
+        var dialog = await Dialog.ShowAsync<TableDefinitionDialog>("New Table", parameters);
+        var result = await dialog.Result;
+
+        if (!result.Canceled)
+        {
+            await LoadTables();
+        }
+    }
+
+    private async Task EditTable(string name)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var model = await db.TableDefinitions.FirstAsync(x => x.Name == name);
+
+        var parameters = new DialogParameters { ["Model"] = model, ["IsEdit"] = true };
+
+        var dialog = await Dialog.ShowAsync<TableDefinitionDialog>("Edit Table", parameters);
+        var result = await dialog.Result;
+
+        if (!result.Canceled)
+        {
+            await LoadTables();
+            await SelectTable(name);
+        }
+    }
+
+    private async Task DeleteTable(string name)
+    {
+        var parameters = new DialogParameters
+        {
+            ["ContentText"] = $"Delete '{name}'? This will fail if fields/references exist.",
+            ["ButtonText"] = "Delete",
+            ["CancelText"] = "Cancel",
+            ["Color"] = Color.Error
+        };
+
+        var dialog = await Dialog.ShowAsync<MudMessageBox>("Delete Table", parameters);
+        var result = await dialog.Result;
+
+        if (result.Canceled) return;
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            db.TableDefinitions.Remove(new TableDefinition { Name = name });
+            await db.SaveChangesAsync();
+
+            if (_selected?.Name == name)
+            {
+                _selected = null;
+                _fields.Clear();
+                _refs.Clear();
+            }
+
+            Snackbar.Add("Table deleted.", Severity.Success);
+            await LoadTables();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Delete failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    // ---------------- Fields ----------------
+    private async Task NewField()
+    {
+        if (_selected is null) return;
+
+        var parameters = new DialogParameters
+        {
+            ["Model"] = new TableFieldDefinition
+            {
+                table_name = _selected.Name
+            },
+            ["IsEdit"] = false
+        };
+
+        var dialog = await Dialog.ShowAsync<TableDefinitionDialog>("New Field", parameters);
+        var result = await dialog.Result;
+
+        if (!result.Canceled) await ReloadSelected();
+    }
+
+    private async Task EditField(string tableName, string columnName)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var model = await db.TableFieldDefinitions.FirstAsync(x => x.table_name == tableName && x.column_name == columnName);
+
+        var parameters = new DialogParameters { ["Model"] = model, ["IsEdit"] = true };
+
+        var dialog = await Dialog.ShowAsync<TableFieldDialog>("Edit Field", parameters);
+        var result = await dialog.Result;
+
+        if (!result.Canceled) await ReloadSelected();
+    }
+
+    private async Task DeleteField(string tableName, string columnName)
+    {
+        var parameters = new DialogParameters
+        {
+            ["ContentText"] = $"Delete '{columnName}'?",
+            ["ButtonText"] = "Delete",
+            ["CancelText"] = "Cancel",
+            ["Color"] = Color.Error
+        };
+
+        var dialog = await Dialog.ShowAsync<MudMessageBox>("Delete Field", parameters);
+        var result = await dialog.Result;
+
+        if (result.Canceled) return;
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            db.TableFieldDefinitions.Remove(new TableFieldDefinition
+            {
+                table_name = tableName,
+                column_name = columnName
+            });
+
+            await db.SaveChangesAsync();
+            Snackbar.Add("Field deleted.", Severity.Success);
+            await ReloadSelected();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Delete failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    // ---------------- References ----------------
+    private async Task NewReference()
+    {
+        if (_selected is null) return;
+
+        var parameters = new DialogParameters
+        {
+            ["Model"] = new TableReferencing
+            {
+                table_name = _selected.Name
+            },
+            ["AllTables"] = _tables
+        };
+
+        var dialog = await Dialog.ShowAsync<TableFieldDialog>("New Reference", parameters);
+        var result = await dialog.Result;
+
+        if (!result.Canceled) await ReloadSelected();
+    }
+
+    private async Task EditReference(int id)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var model = await db.TableReferencings.FirstAsync(x => x.id == id);
+
+        var parameters = new DialogParameters
+        {
+            ["Model"] = model,
+            ["AllTables"] = _tables
+        };
+
+        var dialog = await Dialog.ShowAsync<TableFieldDialog>("Edit Field", parameters);
+        var result = await dialog.Result;
+
+        if (!result.Canceled) await ReloadSelected();
+    }
+
+    private async Task DeleteReference(int id)
+    {
+        var parameters = new DialogParameters
+        {
+            ["Title"] = "Delete Reference",
+            ["ContentText"] = $"Delete reference #{id}?",
+            ["ButtonText"] = "Delete",
+            ["CancelText"] = "Cancel",
+            ["Color"] = Color.Error
+        };
+
+        var dialog = await Dialog.ShowAsync<MudMessageBox>("Delete Reference", parameters);
+        var result = await dialog.Result;
+
+        if (result.Canceled) return;
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            db.TableReferencings.Remove(new TableReferencing { id = id });
+            await db.SaveChangesAsync();
+
+            Snackbar.Add("Reference deleted.", Severity.Success);
+            await ReloadSelected();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Delete failed: {ex.Message}", Severity.Error);
+        }
+    }
+}

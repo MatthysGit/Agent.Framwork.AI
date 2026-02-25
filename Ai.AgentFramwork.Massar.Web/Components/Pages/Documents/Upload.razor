@@ -1,0 +1,309 @@
+﻿@page "/documents/upload"
+@using System.IO
+@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Ai.AgentFramwork.Massar.Web.Services.Documents
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.EntityFrameworkCore
+@using MudBlazor
+
+@inject IDocumentIngestService Ingest
+@inject AppDbContext Db
+@inject ISnackbar Snackbar
+
+<MudPaper Class="pa-5" Elevation="1" Rounded="true">
+
+    <!-- Header -->
+    <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-3">
+        <MudStack Spacing="0">
+            <MudText Typo="Typo.h6">Upload Document</MudText>
+            <MudText Typo="Typo.body2" Color="Color.Surface">
+                Select a document category, choose one or more files, then upload.
+            </MudText>
+        </MudStack>
+
+        @if (_busy)
+        {
+            <MudChip T="string" Color="Color.Info" Variant="Variant.Outlined" Size="Size.Small">
+                Processing…
+            </MudChip>
+        }
+    </MudStack>
+
+    <MudDivider Class="mb-4" />
+
+    <!-- Form area -->
+    <MudGrid Spacing="3">
+
+        <!-- Category -->
+        <MudItem xs="12" sm="6" md="4">
+            <MudSelect T="int"
+                       Label="Document Category"
+                       Required="true"
+                       Dense="true"
+                       Variant="Variant.Outlined"
+                       FullWidth="true"
+                       Margin="Margin.Dense"
+                       @bind-Value="_selectedCategoryId"
+                       Disabled="_busy">
+                @foreach (var c in _categories)
+                {
+                    <MudSelectItem T="int" Value="@c.DocumentCategoryId">
+                        @c.Name
+                    </MudSelectItem>
+                }
+            </MudSelect>
+        </MudItem>
+
+        <!-- File picker (styled container) -->
+        <MudItem xs="12" sm="6" md="8">
+            <MudPaper Outlined="true" Class="pa-4" Style="border-style:dashed;">
+                <MudStack Spacing="1">
+                    <MudText Typo="Typo.subtitle2">Files</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Surface">
+                        Choose one or more files to upload.
+                    </MudText>
+
+                    <div class="mt-2">
+                        <InputFile OnChange="OnFilesSelected" multiple disabled="@_busy" />
+                    </div>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+
+    </MudGrid>
+
+    <!-- Selected files -->
+    @if (_files.Any())
+    {
+        <MudPaper Class="mt-4" Outlined="true">
+            <MudStack Class="pa-3" Spacing="1">
+                <MudText Typo="Typo.subtitle2">Selected files (@_files.Count)</MudText>
+                <MudDivider />
+
+                @foreach (var f in _files)
+                {
+                    <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <MudStack Spacing="0">
+                            <MudText Typo="Typo.body2">@f.Name</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Surface">
+                                @($"{f.Size:n0} bytes")
+                            </MudText>
+                        </MudStack>
+
+                        <MudIcon Icon="@Icons.Material.Filled.Description" Color="Color.Primary" />
+                    </MudStack>
+
+                    <MudDivider />
+                }
+            </MudStack>
+        </MudPaper>
+    }
+
+    <!-- Progress -->
+    @if (_busy && _totalFiles > 0)
+    {
+        <MudPaper Class="pa-3 mt-4" Outlined="true">
+            <MudStack Spacing="1">
+                <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                    <MudText Typo="Typo.subtitle2">Uploading</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Surface">
+                        @_processedFiles / @_totalFiles
+                    </MudText>
+                </MudStack>
+
+                @if (!string.IsNullOrWhiteSpace(_currentFileName))
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Surface">
+                        Current: @_currentFileName
+                    </MudText>
+                }
+
+                <MudProgressLinear Value="@_progressPercent"
+                                   Min="0"
+                                   Max="100"
+                                   Rounded="true" />
+            </MudStack>
+        </MudPaper>
+    }
+
+    <!-- Actions -->
+    <MudStack Row Class="mt-5" Spacing="2" AlignItems="AlignItems.Center" Justify="Justify.FlexEnd">
+        <MudButton Variant="Variant.Text"
+                   Color="Color.Surface"
+                   Disabled="@_busy"
+                   OnClick="ClearFiles">
+            Clear
+        </MudButton>
+
+        <MudButton Variant="Variant.Filled"
+                   Color="Color.Primary"
+                   Disabled="@IsUploadDisabled"
+                   StartIcon="@Icons.Material.Filled.CloudUpload"
+                   OnClick="UploadAsync">
+            Upload
+        </MudButton>
+
+        @if (_busy)
+        {
+            <MudProgressCircular Indeterminate="true" Size="Size.Small" />
+        }
+    </MudStack>
+
+    <!-- Status -->
+    @if (!string.IsNullOrWhiteSpace(_status))
+    {
+        <MudAlert Severity="@_severity" Variant="Variant.Outlined" Dense="true" Class="mt-4">
+            @_status
+        </MudAlert>
+    }
+
+</MudPaper>
+
+@code {
+
+    private List<DocumentCategory> _categories = new();
+
+    // ✅ make this mutable so we can Clear() safely
+    private List<IBrowserFile> _files = new();
+
+    private int _selectedCategoryId;
+    private bool _busy;
+
+    private string _status = "";
+    private Severity _severity = Severity.Info;
+
+    // ✅ progress state
+    private int _totalFiles;
+    private int _processedFiles;
+    private string _currentFileName = "";
+    private double _progressPercent;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _categories = await Db.DocumentCategories
+            .Where(x => x.IsActive)
+            .OrderBy(x => x.Name)
+            .ToListAsync();
+    }
+
+    private bool IsUploadDisabled =>
+        _busy
+        || _files.Count == 0
+        || _selectedCategoryId <= 0;
+
+    private void OnFilesSelected(InputFileChangeEventArgs e)
+    {
+        _files = e.GetMultipleFiles().ToList();
+        _status = "";
+
+        // reset progress
+        _totalFiles = _files.Count;
+        _processedFiles = 0;
+        _currentFileName = "";
+        _progressPercent = 0;
+
+        StateHasChanged();
+    }
+
+    private void ClearFiles()
+    {
+        if (_busy) return;
+
+        _files.Clear();
+        _status = "";
+        _severity = Severity.Info;
+
+        _totalFiles = 0;
+        _processedFiles = 0;
+        _currentFileName = "";
+        _progressPercent = 0;
+
+        StateHasChanged();
+    }
+
+    private async Task UploadAsync()
+    {
+        if (IsUploadDisabled)
+            return;
+
+        try
+        {
+            _busy = true;
+            _status = "Uploading...";
+            _severity = Severity.Info;
+
+            _totalFiles = _files.Count;
+            _processedFiles = 0;
+            _progressPercent = 0;
+            _currentFileName = "";
+
+            StateHasChanged();
+
+            var success = 0;
+            var failed = 0;
+
+            foreach (var file in _files)
+            {
+                _currentFileName = file.Name;
+                StateHasChanged();
+
+                try
+                {
+                    await Ingest.UploadAsync(
+                        file: file,
+                        userId: null,
+                        documentCategoryId: _selectedCategoryId
+                    );
+
+                    success++;
+                }
+                catch (Exception exFile)
+                {
+                    failed++;
+                    Snackbar.Add($"Failed: {file.Name} - {exFile.Message}", Severity.Error);
+                }
+                finally
+                {
+                    _processedFiles++;
+                    _progressPercent = _totalFiles == 0 ? 0 : (double)_processedFiles / _totalFiles * 100.0;
+
+                    StateHasChanged();
+                    await Task.Yield();
+                }
+            }
+
+            _currentFileName = "";
+
+            if (failed == 0)
+            {
+                _status = $"Upload successful. ({success} file(s))";
+                _severity = Severity.Success;
+                Snackbar.Add("Documents uploaded successfully.", Severity.Success);
+
+                _files.Clear();
+                _selectedCategoryId = 0;
+
+                _totalFiles = 0;
+                _processedFiles = 0;
+                _progressPercent = 0;
+            }
+            else
+            {
+                _status = $"Upload completed with errors. Success: {success}, Failed: {failed}.";
+                _severity = Severity.Warning;
+                Snackbar.Add(_status, Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            _status = ex.Message;
+            _severity = Severity.Error;
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+            StateHasChanged();
+        }
+    }
+}

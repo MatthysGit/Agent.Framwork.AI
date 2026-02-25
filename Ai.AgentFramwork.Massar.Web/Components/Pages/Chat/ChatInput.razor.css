@@ -1,0 +1,171 @@
+﻿.input-box {
+    display: flex; 
+    flex-direction: column; 
+    background: white;
+    border: 1px solid rgb(229, 231, 235);
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    margin-top: 0.75rem; 
+}
+
+    .input-box:focus-within {
+        outline: 2px solid #4152d5;
+    }
+
+textarea {
+    resize: none;
+    border: none;
+    outline: none;
+    flex-grow: 1;
+}
+
+    textarea:placeholder-shown + .tools {
+        --send-button-color: var(--s-button-color) ;
+    }
+
+.tools {
+    display: flex; 
+    margin-top: 1rem; 
+    align-items: center;
+}
+
+.tool-icon {
+    width: 1.25rem; 
+    height: 1.25rem;
+}
+
+.send-button {
+    color: var(--send-button-color);
+    margin-left: auto;
+}
+
+    .send-button:hover {
+        color: black;
+    }
+
+.attach {
+    background-color: white;
+    border-style: dashed;
+    color: #888;
+    border-color: #888;
+    padding: 3px 8px;
+}
+
+    .attach:hover {
+        background-color: #f0f0f0;
+        color: black;
+    }
+
+
+.chatgpt-input {
+    position: relative;
+    border: 1px solid rgba(0,0,0,0.22);
+    border-radius: 16px;
+    background: rgba(255,255,255,.9);
+    box-shadow: 0 1px 2px rgba(0,0,0,.16);
+    padding: 10px;
+}
+
+.input-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+}
+
+.chat-textarea {
+    flex: 1;
+    resize: none;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    font-size: 14px;
+    line-height: 1.4;
+    padding: 8px 6px;
+    max-height: 220px;
+    overflow: auto;
+}
+
+.tool-button, .send-button {
+    width: 36px;
+    height: 36px;
+    border-radius: 12px;
+    border: 0;
+    background: transparent;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+}
+
+    .tool-button:hover {
+        background: rgba(0,0,0,.06);
+    }
+
+.send-button {
+    background: rgba(0,0,0,.85);
+    color: white;
+}
+
+    .send-button:hover {
+        background: rgba(0,0,0,.95);
+        color: var(--purple);
+    }
+
+.tool-icon {
+    width: 18px;
+    height: 18px;
+}
+
+.file-input-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+}
+
+.attachment-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 0 2px 10px 2px;
+}
+
+.attachment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 280px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(0,0,0,.12);
+    background: rgba(0,0,0,.03);
+    font-size: 12px;
+}
+
+.attachment-remove {
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    opacity: .7;
+}
+
+    .attachment-remove:hover {
+        opacity: 1;
+    }
+
+.drop-overlay {
+    position: absolute;
+    inset: 0;
+    border-radius: 16px;
+    border: 2px dashed rgba(0,0,0,.35);
+    background: rgba(255,255,255,.75);
+    display: grid;
+    place-items: center;
+    font-size: 13px;
+    font-weight: 600;
+    z-index: 5;
+}
+

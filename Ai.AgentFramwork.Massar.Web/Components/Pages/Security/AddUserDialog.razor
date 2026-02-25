@@ -1,0 +1,319 @@
+﻿@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Microsoft.EntityFrameworkCore
+@using MudBlazor
+
+@inject AppDbContext Db
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h6">@(_isEdit ? "Edit User" : "Add User")</MudText>
+
+            <MudTextField Label="User Name" @bind-Value="UserName" Required="true" Immediate="true" />
+            <MudTextField Label="Email" @bind-Value="Email" Required="true" Immediate="true" />
+
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="6">
+                    <MudTextField Label="First Name" @bind-Value="FirstName" Immediate="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudTextField Label="Last Name" @bind-Value="LastName" Immediate="true" />
+                </MudItem>
+            </MudGrid>
+
+            <MudSwitch T="bool"
+                       @bind-Checked="IsActive"
+                       Color="Color.Primary"
+                       Label="Active" />
+
+            <!-- Role (single) -->
+            <MudSelect T="int?"
+                       Label="Role"
+                       Dense="true"
+                       Clearable="true"
+                       @bind-Value="RoleId"
+                       ToStringFunc="GetRoleName"
+                       HelperText="Select a role">
+
+                @foreach (var r in _roles)
+                {
+                    <MudSelectItem T="int?" Value="r.RoleId">
+                        @r.Name
+                    </MudSelectItem>
+                }
+
+            </MudSelect>
+
+            @if (_rolesLoaded && _roles.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true">
+                    No active roles found.
+                </MudAlert>
+            }
+
+            <!-- Security Groups -->
+            <MudSelect T="int"
+                       Label="Security Groups"
+                       Dense="true"
+                       MultiSelection="false"
+                       Clearable="true"
+                       SelectedValues="_selectedSecurityGroupIds"
+                       SelectedValuesChanged="OnSecurityGroupsChanged"
+                       ToStringFunc="GetSecurityGroupName"
+                       HelperText="Select one or more security groups">
+
+                @foreach (var g in _securityGroups)
+                {
+                    <MudSelectItem T="int" Value="g.SecurityGroupId">
+                        @g.Name
+                    </MudSelectItem>
+                }
+
+            </MudSelect>
+
+            @if (_securityGroupsLoaded && _securityGroups.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true">
+                    No active security groups found.
+                </MudAlert>
+            }
+
+            @if (_isEdit)
+            {
+                <MudSwitch T="bool"
+                           Value="_changePassword"
+                           ValueChanged="OnChangePasswordChanged"
+                           Color="Color.Primary"
+                           Label="Change password" />
+            }
+
+            @if (!_isEdit || _changePassword)
+            {
+                <MudTextField Label="Password"
+                              @bind-Value="Password"
+                              InputType="InputType.Password"
+                              Required="true"
+                              Immediate="true"
+                              AutoComplete="new-password" />
+
+                <MudTextField Label="Confirm Password"
+                              @bind-Value="ConfirmPassword"
+                              InputType="InputType.Password"
+                              Required="true"
+                              Immediate="true"
+                              AutoComplete="new-password" />
+            }
+
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error" Dense="true">@_error</MudAlert>
+            }
+        </MudStack>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save">
+            @(_isEdit ? "Save" : "Create")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+
+    // pass these when editing
+    [Parameter] public string? EditUserId { get; set; }
+    [Parameter] public string? EditUserName { get; set; }
+    [Parameter] public string? EditEmail { get; set; }
+    [Parameter] public string? EditFirstName { get; set; }
+    [Parameter] public string? EditLastName { get; set; }
+    [Parameter] public bool? EditIsActive { get; set; }
+    [Parameter] public int? EditRoleId { get; set; }
+
+    private bool _isEdit => !string.IsNullOrWhiteSpace(EditUserId);
+
+    private string UserName { get; set; } = "";
+    private string Email { get; set; } = "";
+    private string FirstName { get; set; } = "";
+    private string LastName { get; set; } = "";
+    private bool IsActive { get; set; } = true;
+
+    private int? RoleId { get; set; }
+
+    private string Password { get; set; } = "";
+    private string ConfirmPassword { get; set; } = "";
+    private string? _error;
+
+    // Edit-only: toggle to show masked password inputs
+    private bool _changePassword;
+
+    // Property wrapper so we can clear password fields when toggle is turned off
+    private bool ChangePassword
+    {
+        get => _changePassword;
+        set
+        {
+            _changePassword = value;
+            if (!_changePassword)
+            {
+                Password = "";
+                ConfirmPassword = "";
+            }
+        }
+    }
+
+    private string GetSecurityGroupName(int id)
+    {
+        return _securityGroups
+                   .FirstOrDefault(x => x.SecurityGroupId == id)?.Name
+               ?? id.ToString();
+    }
+
+    private string GetRoleName(int? id)
+    {
+        if (id is null) return "";
+        return _roles.FirstOrDefault(x => x.RoleId == id.Value)?.Name ?? id.Value.ToString();
+    }
+
+    // Roles
+    private List<Role> _roles = new();
+    private bool _rolesLoaded;
+
+    // Security Groups
+    private List<SecurityGroup> _securityGroups = new();
+    private bool _securityGroupsLoaded;
+
+    // IMPORTANT: MudBlazor 9 rc.1 expects IReadOnlyCollection<T> for SelectedValues
+    private IReadOnlyCollection<int> _selectedSecurityGroupIds = Array.Empty<int>();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _securityGroups = await Db.SecurityGroups
+            .AsNoTracking()
+            .Where(x => x.IsActive)
+            .OrderBy(x => x.Name)
+            .ToListAsync();
+
+        _securityGroupsLoaded = true;
+
+        _roles = await Db.Roles
+            .AsNoTracking()
+            .Where(x => x.IsActive)
+            .OrderBy(x => x.Name)
+            .ToListAsync();
+
+        _rolesLoaded = true;
+
+        if (_isEdit && !string.IsNullOrWhiteSpace(EditUserId))
+        {
+            var ids = await Db.UserSecurityGroups
+                .AsNoTracking()
+                .Where(x => x.UserId == EditUserId)
+                .Select(x => x.SecurityGroupId)
+                .ToListAsync();
+
+            _selectedSecurityGroupIds = ids; // List<int> implements IReadOnlyCollection<int>
+        }
+    }
+
+    private void OnSecurityGroupsChanged(IReadOnlyCollection<int> values)
+    {
+        _selectedSecurityGroupIds = values ?? Array.Empty<int>();
+        StateHasChanged();
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (_isEdit)
+        {
+            UserName = EditUserName ?? "";
+            Email = EditEmail ?? "";
+            FirstName = EditFirstName ?? "";
+            LastName = EditLastName ?? "";
+            IsActive = EditIsActive ?? true;
+            RoleId = EditRoleId;
+
+            _changePassword = false;
+            Password = "";
+            ConfirmPassword = "";
+        }
+        else
+        {
+            IsActive = true;
+            RoleId = null;
+            _changePassword = false;
+            Password = "";
+            ConfirmPassword = "";
+            _selectedSecurityGroupIds ??= Array.Empty<int>();
+        }
+    }
+
+    private void OnChangePasswordChanged(bool value)
+    {
+        _changePassword = value;
+
+        if (!_changePassword)
+        {
+            Password = "";
+            ConfirmPassword = "";
+        }
+
+        StateHasChanged();
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+
+    private void Save()
+    {
+        _error = null;
+
+        if (string.IsNullOrWhiteSpace(UserName) || string.IsNullOrWhiteSpace(Email))
+        {
+            _error = "UserName and Email are required.";
+            return;
+        }
+
+        // Only require password when adding OR when ChangePassword is ON in edit mode
+        if (!_isEdit || ChangePassword)
+        {
+            if (string.IsNullOrWhiteSpace(Password))
+            {
+                _error = "Password is required.";
+                return;
+            }
+
+            if (Password != ConfirmPassword)
+            {
+                _error = "Passwords do not match.";
+                return;
+            }
+        }
+
+        MudDialog.Close(DialogResult.Ok(new UserUpsertDto(
+            EditUserId,
+            UserName.Trim(),
+            Email.Trim(),
+            string.IsNullOrWhiteSpace(FirstName) ? null : FirstName.Trim(),
+            string.IsNullOrWhiteSpace(LastName) ? null : LastName.Trim(),
+            IsActive,
+            RoleId,
+            !_isEdit || ChangePassword ? Password : null,
+            _selectedSecurityGroupIds.ToList()
+        )));
+    }
+
+    public record UserUpsertDto(
+        string? UserId,
+        string UserName,
+        string Email,
+        string? FirstName,
+        string? LastName,
+        bool IsActive,
+        int? RoleId,
+        string? Password,
+        IReadOnlyCollection<int> SecurityGroupIds);
+}

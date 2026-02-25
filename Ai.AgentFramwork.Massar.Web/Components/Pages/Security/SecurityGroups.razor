@@ -1,0 +1,317 @@
+﻿@page "/settings/teams"
+@using Ai.AgentFramwork.Massar.Web.Components.Pages.Team
+@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Ai.AgentFramwork.Massar.Web.Services.Teams
+
+@inject ITeamAdminService TeamService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<MudPaper Class="pa-4" Elevation="1" Rounded="true">
+    <MudStack Spacing="2">
+
+        <MudStack Direction="Row" AlignItems="AlignItems.Center" JustifyContent="SpaceBetween">
+            <MudText Typo="Typo.h6">Teams & Roles</MudText>
+
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add"
+                       OnClick="AddTeamAsync">
+                Add Team
+            </MudButton>
+        </MudStack>
+
+        <MudDivider/>
+
+        <MudTable Items="_teams" Dense="true" Hover="true" Elevation="0">
+            <HeaderContent>
+                <MudTh>Team</MudTh>
+                <MudTh>Active</MudTh>
+                <MudTh>Created</MudTh>
+                <MudTh class="text-end">Actions</MudTh>
+            </HeaderContent>
+
+            <RowTemplate Context="team">
+                <MudTd DataLabel="Team">
+                    <MudText Typo="Typo.subtitle2">@team.Name</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">ID: @team.TeamId</MudText>
+                </MudTd>
+
+                <MudTd DataLabel="Active">
+                    <MudSwitch T="bool"
+                               Checked="team.IsActive"
+                               Color="Color.Success"
+                               CheckedChanged="async v => await ToggleTeamActiveAsync(team.TeamId, v)"/>
+                </MudTd>
+
+                <MudTd DataLabel="Created">@team.CreatedOn.ToString("yyyy-MM-dd")</MudTd>
+
+                <MudTd DataLabel="Actions" Class="text-end">
+                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Color="Color.Primary"
+                                   OnClick="() => EditTeamAsync(team.TeamId)"/>
+                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error"
+                                   OnClick="() => DeleteTeamAsync(team.TeamId)"/>
+                </MudTd>
+            </RowTemplate>
+
+            <ChildRowContent Context="team">
+                <MudPaper Class="pa-3 ma-2" Elevation="0" Outlined="true">
+                    <MudStack Spacing="2">
+                        <MudStack Direction="Row" AlignItems="AlignItems.Center" JustifyContent="SpaceBetween">
+                            <MudText Typo="Typo.subtitle1">Roles</MudText>
+
+                            <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.Add"
+                                       OnClick="() => AddRoleAsync(team.TeamId)">
+                                Add Role
+                            </MudButton>
+                        </MudStack>
+
+                        <MudTable Items="GetRolesForTeam(team.TeamId)" Dense="true" Hover="true" Elevation="0">
+                            <HeaderContent>
+                                <MudTh>Role</MudTh>
+                                <MudTh>Active</MudTh>
+                                <MudTh>Created</MudTh>
+                                <MudTh class="text-end">Actions</MudTh>
+                            </HeaderContent>
+
+                            <RowTemplate Context="tr">
+                                <MudTd DataLabel="Role">
+                                    <MudText Typo="Typo.body1">@tr.Role?.Name</MudText>
+                                </MudTd>
+
+                                <MudTd DataLabel="Active">
+                                    <MudSwitch T="bool"
+                                               Checked="tr.IsActive"
+                                               Color="Color.Success"
+                                               CheckedChanged="async v => await ToggleRoleActiveAsync(tr.TeamRoleId, v)"/>
+                                </MudTd>
+
+                                <MudTd DataLabel="Created">@tr.CreatedOn.ToString("yyyy-MM-dd")</MudTd>
+
+                                <MudTd DataLabel="Actions" Class="text-end">
+                                    <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" JustifyContent="FlexEnd">
+                                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Color="Color.Primary" Size="Size.Small"
+                                                       OnClick="() => EditRoleAsync(tr.TeamRoleId)"/>
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small"
+                                                       OnClick="() => DeleteRoleAsync(tr.TeamRoleId)"/>
+                                    </MudStack>
+                                </MudTd>
+                            </RowTemplate>
+                        </MudTable>
+
+                        @if (!GetRolesForTeam(team.TeamId).Any())
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                No roles yet. Click “Add Role”.
+                            </MudText>
+                        }
+                    </MudStack>
+                </MudPaper>
+            </ChildRowContent>
+        </MudTable>
+
+        @if (_teams.Count == 0)
+        {
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                No teams found. Click “Add Team” to create your first team.
+            </MudText>
+        }
+
+    </MudStack>
+</MudPaper>
+
+@code {
+    private List<Team> _teams = new();
+    private List<TeamRole> _roles = new();
+    private List<TeamRole> _teamRoles = new(); // links
+    private List<Role> _rolesCatalog = new(); // master
+    private List<TeamRole> _filteredRoles = new();
+    private int? _selectedTeamId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _teams = (await TeamService.GetTeamsAsync()).ToList();
+
+        // link records (include Role navigation in service)
+        _teamRoles = (await TeamService.GetTeamRolesAsync()).ToList();
+
+        // master list (optional; only if you need it outside autocomplete)
+        _rolesCatalog = (await TeamService.GetRolesAsync()).ToList();
+
+        RefreshRolesGrid();
+    }
+
+    private void RefreshRolesGrid()
+    {
+        if (_selectedTeamId is null)
+        {
+            _filteredRoles = new List<TeamRole>();
+            return;
+        }
+
+        _filteredRoles = _teamRoles
+            .Where(r => r.TeamId == _selectedTeamId.Value)
+            .OrderBy(r => r.Role!.Name)
+            .ToList();
+    }
+
+
+    private IEnumerable<TeamRole> GetRolesForTeam(int teamId)
+    {
+        return _teamRoles.Where(tr => tr.TeamId == teamId);
+    }
+
+
+    private async Task AddTeamAsync()
+    {
+        var opts = new DialogOptions { CloseButton = true, FullWidth = true, MaxWidth = MaxWidth.Small };
+
+        var dlg = await DialogService.ShowAsync<TeamEditDialog>(
+            "Add Team",
+            new DialogParameters(),
+            opts);
+
+        var result = await dlg.Result;
+
+
+        if (result?.Canceled != false) return;
+        await ReloadAsync();
+    }
+
+    private async Task EditTeamAsync(int teamId)
+    {
+        var opts = new DialogOptions { CloseButton = true, FullWidth = true, MaxWidth = MaxWidth.Small };
+        var parms = new DialogParameters { ["TeamId"] = teamId };
+
+        var dlg = await DialogService.ShowAsync<TeamEditDialog>(
+            "Edit Team",
+            parms,
+            opts);
+
+        var result = await dlg.Result;
+
+        if (result?.Canceled != false) return;
+        await ReloadAsync();
+    }
+
+    private async Task ToggleTeamActiveAsync(int teamId, bool isActive)
+    {
+        try
+        {
+            await TeamService.SetTeamActiveAsync(teamId, isActive);
+            Snackbar.Add("Team updated.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.GetBaseException().Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadAsync();
+        }
+    }
+
+    private async Task DeleteTeamAsync(int teamId)
+    {
+        var confirm = await DialogService.ShowMessageBoxAsync(
+            "Delete Team",
+            (MarkupString)"This will delete the team and its roles. Continue?",
+            "Delete",
+            cancelText: "Cancel");
+
+        if (confirm != true) return;
+
+        try
+        {
+            await TeamService.DeleteTeamAsync(teamId);
+            Snackbar.Add("Team deleted.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.GetBaseException().Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadAsync();
+        }
+    }
+
+    private async Task AddRoleAsync(int teamId)
+    {
+        var opts = new DialogOptions { CloseButton = true, FullWidth = true, MaxWidth = MaxWidth.Small };
+        var parms = new DialogParameters { ["TeamId"] = teamId };
+
+        var dlg = await DialogService.ShowAsync<TeamRoleEditDialog>(
+            "Add Role",
+            parms,
+            opts);
+
+        var result = await dlg.Result;
+
+        if (result?.Canceled != false) return;
+        await ReloadAsync();
+    }
+
+    private async Task EditRoleAsync(int teamRoleId)
+    {
+        var opts = new DialogOptions { CloseButton = true, FullWidth = true, MaxWidth = MaxWidth.Small };
+        var parms = new DialogParameters { ["TeamRoleId"] = teamRoleId };
+
+        var dlg = await DialogService.ShowAsync<TeamRoleEditDialog>(
+            "Edit Role",
+            parms,
+            opts);
+
+        var result = await dlg.Result;
+
+        if (result?.Canceled != false) return;
+        await ReloadAsync();
+    }
+
+    private async Task ToggleRoleActiveAsync(int teamRoleId, bool isActive)
+    {
+        try
+        {
+            await TeamService.SetTeamRoleActiveAsync(teamRoleId, isActive);
+            Snackbar.Add("Role updated.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.GetBaseException().Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadAsync();
+        }
+    }
+
+    private async Task DeleteRoleAsync(int teamRoleId)
+    {
+        var confirm = await DialogService.ShowMessageBoxAsync(
+            "Delete Role",
+            (MarkupString)"Delete this role?",
+            "Delete",
+            cancelText: "Cancel");
+
+        if (confirm != true) return;
+
+        try
+        {
+            await TeamService.DeleteTeamAsync(teamRoleId);
+            Snackbar.Add("Role deleted.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.GetBaseException().Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadAsync();
+        }
+    }
+
+}

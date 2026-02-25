@@ -1,0 +1,93 @@
+﻿@using Ai.AgentFramwork.Massar.Web.Services.Teams
+@inject ITeamAdminService TeamService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.subtitle1">@(_isEdit ? "Edit Team" : "Add Team")</MudText>
+
+            <MudTextField @bind-Value="_name"
+                          Label="Team Name"
+                          Required="true"
+                          Immediate="true"
+                          MaxLength="200"/>
+
+            <MudSwitch T="bool"
+                       @bind-Checked="_isActive"
+                       Color="Color.Success">
+                Active
+            </MudSwitch>
+        </MudStack>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveAsync" Disabled="@_saving">
+            Save
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public int? TeamId { get; set; }
+
+    private bool _isEdit => TeamId.HasValue;
+    private bool _saving;
+
+    private string _name = string.Empty;
+    private bool _isActive = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!TeamId.HasValue) return;
+
+        var team = await TeamService.GetTeamAsync(TeamId.Value);
+        if (team is null) return;
+
+        _name = team.Name;
+        _isActive = team.IsActive;
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+
+    private async Task SaveAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            Snackbar.Add("Team name is required.", Severity.Warning);
+            return;
+        }
+
+        _saving = true;
+
+        try
+        {
+            if (!_isEdit)
+            {
+                await TeamService.CreateTeamAsync(_name, _isActive);
+            }
+            else
+            {
+                await TeamService.UpdateTeamAsync(TeamId!.Value, _name, _isActive);
+            }
+
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Save failed: {ex.GetBaseException().Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+}

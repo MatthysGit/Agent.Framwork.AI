@@ -1,0 +1,177 @@
+﻿@inherits LayoutComponentBase
+@using Microsoft.AspNetCore.Components.Authorization
+
+@inject CurrentUserBootstrapper Bootstrapper
+@inject NavigationManager Nav
+
+<MudThemeProvider />
+<MudPopoverProvider />
+<MudDialogProvider />
+<MudSnackbarProvider />
+
+<MudLayout>
+
+    <!-- Top App Bar -->
+    <MudAppBar Elevation="1" Dense="true" Class="appbar">
+        <MudIconButton Icon="@Icons.Material.Filled.Menu"
+                       Color="Color.Inherit"
+                       Edge="Edge.Start"
+                       OnClick="ToggleDrawer" />
+
+        @* <MudText Typo="Typo.subtitle1" Class="appbar-title">Massar AI</MudText> *@
+        
+        <div class="drawer-logo">
+            <img src="images/massar.png"
+                 alt="Massar"
+                 class="drawer-logo-img"
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='block';" />
+
+          
+        </div>
+
+        <MudSpacer />
+
+        <AuthorizeView>
+            <Authorized>
+                <MudText Typo="Typo.body2" Class="me-2">@context.User.Identity?.Name</MudText>
+
+                <form method="post" action="/auth/logout">
+                    <MudButton HtmlTag="button"
+                               ButtonType="ButtonType.Submit"
+                               Variant="Variant.Outlined"
+                               Color="Color.Inherit"
+                               Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.Logout">
+                        Sign out
+                    </MudButton>
+                </form>
+            </Authorized>
+
+            <NotAuthorized>
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.Login"
+                           OnClick="@(() => Nav.NavigateTo("/login"))">
+                    Sign in
+                </MudButton>
+            </NotAuthorized>
+        </AuthorizeView>
+    </MudAppBar>
+
+    <!-- Left Drawer / Sidebar -->
+    <MudDrawer @bind-Open="_drawerOpen"
+               Variant="DrawerVariant.Responsive"
+               Elevation="1"
+               Width="180px"
+               ClipMode="DrawerClipMode.Always"
+               Class="drawer">
+
+        <!-- Logo -->
+
+
+        <!-- Nav -->
+        <div class="drawer-nav">
+            <NavMenu />
+        </div>
+    </MudDrawer>
+
+    <!-- Page Content -->
+    <MudMainContent Class="main">
+        <div class="content-wrap">
+            @Body
+        </div>
+    </MudMainContent>
+
+</MudLayout>
+
+<style>
+    /* AppBar */
+    .appbar {
+        background: #ffffff;
+        color: rgba(0,0,0,.78);
+        border-bottom: 0.5px solid rgba(0,0,0,.06);
+    }
+
+    .appbar-title {
+        font-weight: 600;
+        letter-spacing: .2px;
+        margin-left: 6px;
+    }
+
+
+    .mud-layout .mud-main-content {
+    margin-left: 180px;
+}
+
+/* When drawer is closed (hamburger), remove the offset */
+.mud-drawer--closed ~ .mud-main-content {
+    margin-left: 0 !important;
+}
+
+    /* Drawer */
+    .drawer {
+        /* background: linear-gradient(180deg, #0b1f3a 0%, #0a1830 100%); */
+        background: var(--header-color); 
+        /* color: rgba(255,255,255,.88); */
+       
+    }
+
+    .drawer-logo {
+        height: 64px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 10px 12px;
+        border-bottom: 1px solid rgba(255,255,255,.08);
+    }
+
+    .drawer-logo-img {
+        height: 34px;
+        width: auto;
+        object-fit: contain;
+        display: block;
+    }
+
+    .drawer-logo-fallback {
+        font-weight: 700;
+        letter-spacing: 1px;
+        font-size: 14px;
+        color: rgba(255,255,255,.92);
+    }
+
+    .drawer-nav {
+        padding: 10px 10px 14px 10px;
+    }
+
+    /* Main content */
+    .main {
+        background: #f6f7fb;
+        min-height: calc(100vh - 56px);
+    }
+
+    .content-wrap {
+        padding: 18px 18px 24px 18px;
+    }
+
+    /* Nice scrollbar in drawer (optional) */
+    .drawer ::-webkit-scrollbar {
+        width: 10px;
+    }
+
+    .drawer ::-webkit-scrollbar-thumb {
+        background: rgba(255,255,255,.12);
+        border-radius: 999px;
+        border: 2px solid rgba(0,0,0,0);
+        background-clip: padding-box;
+    }
+</style>
+
+@code {
+    private bool _drawerOpen = true;
+
+    private void ToggleDrawer() => _drawerOpen = !_drawerOpen;
+
+    protected override async Task OnInitializedAsync()
+        => await Bootstrapper.EnsureLoadedAsync();
+}

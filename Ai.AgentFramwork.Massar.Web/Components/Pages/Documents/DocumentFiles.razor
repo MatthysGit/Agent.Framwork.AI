@@ -1,0 +1,395 @@
+﻿@page "/documents/files"
+@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Microsoft.EntityFrameworkCore
+@using MudBlazor
+
+@inject AppDbContext Db
+@inject MudBlazor.IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject NavigationManager Nav
+
+<MudPaper Class="pa-4">
+    <MudStack Spacing="2">
+        <MudText Typo="Typo.h6">Loaded Files</MudText>
+
+        <MudStack Row Spacing="2" AlignItems="AlignItems.Center">
+            <MudTextField @bind-Value="_search"
+                          Placeholder="Search file name / source / original file name…"
+                          Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Search"
+                          Immediate="true"
+                          DebounceInterval="250"
+                          Variant="Variant.Outlined"
+                          Margin="Margin.Dense"
+                          Class="max-w-md" />
+
+            <MudSpacer />
+
+            <MudButton Variant="Variant.Outlined"
+                       StartIcon="@Icons.Material.Filled.Refresh"
+                       OnClick="@(async _ => await ReloadAsync())">
+                Refresh
+            </MudButton>
+        </MudStack>
+
+        <MudTable Items="_rows"
+                  Dense="true"
+                  Hover="true"
+                  Bordered="true"
+                  Striped="true"
+                  Loading="_loading">
+
+            <HeaderContent>
+                <MudTh>File</MudTh>
+                <MudTh>Category</MudTh>
+                <MudTh>Type</MudTh>
+                <MudTh Align="Right">Size</MudTh>
+                <MudTh>Created (UTC)</MudTh>
+                <MudTh></MudTh>
+            </HeaderContent>
+
+            <RowTemplate>
+                <MudTd>
+                    <MudStack Spacing="0">
+                        <MudText Typo="Typo.subtitle2">@context.FileName</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            @* Source: @context.SourceName
+                               @if (!string.IsNullOrWhiteSpace(context.OriginalFileName))
+                               {
+                                   <span> | Original: @context.OriginalFileName</span>
+                               } *@
+                        </MudText>
+                    </MudStack>
+                </MudTd>
+
+                <MudTd>
+                    @if (context.Categories.Count == 0)
+                    {
+                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">None</MudChip>
+                    }
+                    else
+                    {
+                        <MudStack Row Spacing="1" Wrap="MudBlazor.Wrap.Wrap">
+                            @foreach (var c in context.Categories)
+                            {
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@c</MudChip>
+                            }
+                        </MudStack>
+                    }
+                </MudTd>
+
+                <MudTd>
+                    @if (!string.IsNullOrWhiteSpace(context.FileExtension))
+                    {
+                        <MudText Typo="Typo.caption" Color="Color.Surface">@context.FileExtension</MudText>
+                    }
+                </MudTd>
+
+                <MudTd Align="Right">
+                    @FormatBytes(context.FileSizeBytes)
+                </MudTd>
+
+                <MudTd>
+                    @context.CreatedUtc.ToString("yyyy-MM-dd HH:mm:ss")
+                </MudTd>
+
+                <MudTd Align="Right">
+                    <MudStack Row Spacing="1" Justify="Justify.FlexEnd">
+
+                        <MudTooltip Text="Download File">
+                            <MudIconButton Icon="@Icons.Material.Filled.Download"
+                                           OnClick="@(_ => DownloadFile(context.DocumentFileId))" />
+                        </MudTooltip>
+
+                        <MudTooltip Text="Edit Category">
+                            <MudIconButton Icon="@Icons.Material.Filled.Edit"
+                                           OnClick="@(async _ => await EditCategoryAsync(context.DocumentId, context.PrimaryCategoryId))" />
+                        </MudTooltip>
+
+                        <MudTooltip Text="Delete File">
+                            <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                           OnClick="@(async _ => await DeleteFileAsync(context.DocumentFileId))" />
+                        </MudTooltip>
+                    </MudStack>
+                </MudTd>
+            </RowTemplate>
+
+            <NoRecordsContent>
+                <MudText Typo="Typo.body2" Class="pa-4">No files found.</MudText>
+            </NoRecordsContent>
+        </MudTable>
+    </MudStack>
+</MudPaper>
+
+@code {
+    private bool _loading;
+    private string? _search;
+
+    private List<DocumentCategory> _categories = new();
+    private List<FileRow> _rows = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadCategoriesAsync();
+        await ReloadAsync();
+    }
+
+    private void DownloadFile(Guid documentFileId)
+    {
+        // Requires an endpoint in your app (see note below)
+        Nav.NavigateTo($"/documents/files/download/{documentFileId}", forceLoad: true);
+    }
+
+    private async Task LoadCategoriesAsync()
+    {
+        _categories = await Db.DocumentCategories
+            .AsNoTracking()
+            .Where(c => c.IsActive)
+            .OrderBy(c => c.Name)
+            .ToListAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        try
+        {
+            var q = Db.DocumentFiles
+                .AsNoTracking()
+                .Include(df => df.Document)
+                    .ThenInclude(d => d.DocumentCategoryMaps)
+                        .ThenInclude(m => m.DocumentCategory)
+                .AsQueryable();
+
+            if (!string.IsNullOrWhiteSpace(_search))
+            {
+                var s = _search.Trim();
+                q = q.Where(df =>
+                    df.FileName.Contains(s) ||
+                    df.Document.SourceName.Contains(s) ||
+                    (df.Document.OriginalFileName != null && df.Document.OriginalFileName.Contains(s)));
+            }
+
+            var data = await q
+                .OrderByDescending(df => df.CreatedUtc)
+                .Select(df => new FileRow
+                {
+                    DocumentFileId = df.DocumentFileId,
+                    DocumentId = df.DocumentId,
+                    FileName = df.FileName,
+                    ContentType = df.ContentType,
+                    FileExtension = df.FileExtension,
+                    FileSizeBytes = df.FileSizeBytes,
+                    CreatedUtc = df.CreatedUtc,
+                    SourceName = df.Document.SourceName,
+                    OriginalFileName = df.Document.OriginalFileName,
+                    Categories = df.Document.DocumentCategoryMaps
+                        .Select(m => m.DocumentCategory.Name)
+                        .OrderBy(n => n)
+                        .ToList(),
+                    PrimaryCategoryId = df.Document.DocumentCategoryMaps
+                        .Select(m => (int?)m.DocumentCategoryId)
+                        .FirstOrDefault()
+                })
+                .ToListAsync();
+
+            _rows = data;
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load files: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task EditCategoryAsync(Guid documentId, int? currentCategoryId)
+    {
+        if (_categories.Count == 0)
+        {
+            Snackbar.Add("No active categories found.", Severity.Warning);
+            return;
+        }
+
+        var parameters = new DialogParameters
+        {
+            { "DocumentId", documentId },
+            { "CurrentCategoryId", currentCategoryId },
+            { "Categories", _categories }
+        };
+
+        var options = new DialogOptions
+        {
+            CloseButton = true,
+            MaxWidth = MaxWidth.Small,
+            FullWidth = true
+        };
+
+        var dialog = await DialogService.ShowAsync<EditDocumentCategoryDialog>(
+            title: "Change Category",
+            parameters: parameters,
+            options: options);
+
+        var result = await dialog.Result;
+
+        if (result is null || result.Canceled)
+            return;
+
+        var newCategoryId = (int?)result.Data;
+
+        try
+        {
+            var existing = await Db.DocumentCategoryMaps
+                .Where(m => m.DocumentId == documentId)
+                .ToListAsync();
+
+            Db.DocumentCategoryMaps.RemoveRange(existing);
+
+            if (newCategoryId.HasValue)
+            {
+                Db.DocumentCategoryMaps.Add(new DocumentCategoryMap
+                {
+                    DocumentId = documentId,
+                    DocumentCategoryId = newCategoryId.Value,
+                    CreatedUtc = DateTime.UtcNow
+                });
+            }
+
+            await Db.SaveChangesAsync();
+
+            Snackbar.Add("Category updated.", Severity.Success);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to update category: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task DeleteFileAsync(Guid documentFileId)
+    {
+        // ✅ MudBlazor v9-safe confirm dialog (custom component)
+        var parameters = new DialogParameters
+        {
+            { nameof(ConfirmDialog.ContentText), "This will delete the selected file.\n\nIf this is the last file for its document, related data will also be removed." },
+            { nameof(ConfirmDialog.ButtonText), "Delete" },
+            { nameof(ConfirmDialog.Color), Color.Error }
+        };
+
+        var confirmDialog = await DialogService.ShowAsync<ConfirmDialog>(
+            title: "Delete file?",
+            parameters: parameters,
+            options: new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = true });
+
+        var confirmResult = await confirmDialog.Result;
+
+        if (confirmResult is null || confirmResult.Canceled)
+            return;
+
+        try
+        {
+            // ✅ Required when SqlServerRetryingExecutionStrategy is enabled
+            var strategy = Db.Database.CreateExecutionStrategy();
+
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var tx = await Db.Database.BeginTransactionAsync();
+
+                var file = await Db.DocumentFiles
+                    .FirstOrDefaultAsync(f => f.DocumentFileId == documentFileId);
+
+                if (file is null)
+                {
+                    Snackbar.Add("File not found.", Severity.Warning);
+                    return;
+                }
+
+                var documentId = file.DocumentId;
+
+                Db.DocumentFiles.Remove(file);
+                await Db.SaveChangesAsync();
+
+                var remainingFiles = await Db.DocumentFiles.CountAsync(f => f.DocumentId == documentId);
+                if (remainingFiles == 0)
+                {
+                    // Load chunk ids first
+                    var chunkIds = await Db.DocumentChunks
+                        .Where(c => c.DocumentId == documentId)
+                        .Select(c => c.ChunkId)   // <-- adjust if your PK name differs
+                        .ToListAsync();
+
+                    // Delete embeddings that reference those chunks
+                    var embeddings = await Db.ChunkEmbeddings
+                        .Where(e => chunkIds.Contains(e.ChunkId))
+                        .ToListAsync();
+
+                    Db.ChunkEmbeddings.RemoveRange(embeddings);
+
+                    // Now delete chunks
+                    var chunks = await Db.DocumentChunks
+                        .Where(c => c.DocumentId == documentId)
+                        .ToListAsync();
+
+                    Db.DocumentChunks.RemoveRange(chunks);
+
+                    // The rest stays the same
+                    var meta = await Db.DocumentMetadata.Where(m => m.DocumentId == documentId).ToListAsync();
+                    var roleAccess = await Db.DocumentRoleAccesses.Where(r => r.DocumentId == documentId).ToListAsync();
+                    var catMaps = await Db.DocumentCategoryMaps.Where(m => m.DocumentId == documentId).ToListAsync();
+
+                    Db.DocumentMetadata.RemoveRange(meta);
+                    Db.DocumentRoleAccesses.RemoveRange(roleAccess);
+                    Db.DocumentCategoryMaps.RemoveRange(catMaps);
+
+                    var doc = await Db.Documents.FirstOrDefaultAsync(d => d.DocumentId == documentId);
+                    if (doc != null)
+                        Db.Documents.Remove(doc);
+
+                    await Db.SaveChangesAsync();
+                }
+
+                await tx.CommitAsync();
+            });
+
+            Snackbar.Add("File deleted.", Severity.Success);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to delete file: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB", "TB" };
+        double len = bytes;
+        int order = 0;
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len /= 1024;
+        }
+        return $"{len:0.##} {sizes[order]}";
+    }
+
+    private sealed class FileRow
+    {
+        public Guid DocumentFileId { get; set; }
+        public Guid DocumentId { get; set; }
+
+        public string FileName { get; set; } = "";
+        public string ContentType { get; set; } = "";
+        public string? FileExtension { get; set; }
+        public long FileSizeBytes { get; set; }
+        public DateTime CreatedUtc { get; set; }
+
+        public string SourceName { get; set; } = "";
+        public string? OriginalFileName { get; set; }
+
+        public List<string> Categories { get; set; } = new();
+        public int? PrimaryCategoryId { get; set; }
+    }
+}

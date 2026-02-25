@@ -1,0 +1,14 @@
+﻿@page "/test"
+
+<h1>Test Page</h1>
+
+<button @onclick="Click">Click Me</button>
+
+<p>@Message</p>
+
+@code {
+    private string Message = "";
+
+    private void Click()
+        => Message = "Clicks work ✅";
+}

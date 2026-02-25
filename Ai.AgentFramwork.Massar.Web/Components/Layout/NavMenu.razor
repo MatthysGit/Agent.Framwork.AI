@@ -1,0 +1,201 @@
+﻿@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject AuthenticationStateProvider AuthStateProvider
+
+<nav class="nav flex-column">
+
+    @if (_loading)
+    {
+        <MudProgressLinear Indeterminate="true" />
+    }
+    else
+    {
+        @* Render GROUPS inside a single MudExpansionPanels container *@
+        <MudExpansionPanels Elevation="0">
+            @foreach (var item in _rootItems)
+            {
+                @if (item.ItemType == 1)
+                {
+                    @RenderGroup(item)
+                }
+                else
+                {
+                    @RenderLink(item)
+                }
+            }
+        </MudExpansionPanels>
+    }
+
+</nav>
+
+@code
+{
+    private bool _loading = true;
+
+    private List<SecurityMenuItem> _allowed = new();
+    private List<SecurityMenuItem> _rootItems = new();
+    private Dictionary<int, List<SecurityMenuItem>> _childrenByParentId = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _loading = true;
+
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            var user = authState.User;
+
+            if (user?.Identity?.IsAuthenticated != true)
+            {
+                ClearMenu();
+                return;
+            }
+
+            var userId =
+                user.FindFirst("UserId")?.Value
+                ?? user.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                ?? user.FindFirst("sub")?.Value
+                ?? user.FindFirst(ClaimTypes.Name)?.Value;
+
+            await using var db = await DbFactory.CreateDbContextAsync();
+
+            var groupIds = GetSecurityGroupIdsFromClaims(user);
+
+            if (groupIds.Count == 0 && !string.IsNullOrWhiteSpace(userId))
+            {
+                groupIds = await db.UserSecurityGroups
+                    .AsNoTracking()
+                    .Where(x => x.UserId == userId)
+                    .Select(x => x.SecurityGroupId)
+                    .Distinct()
+                    .ToListAsync();
+            }
+
+            if (groupIds.Count == 0)
+            {
+                ClearMenu();
+                return;
+            }
+
+            _allowed = await (
+                from map in db.SecurityGroupMenuItems
+                join mi in db.SecurityMenuItems on map.MenuItemId equals mi.MenuItemId
+                where groupIds.Contains(map.SecurityGroupId)
+                      && map.IsEnabled
+                      && mi.IsEnabled
+                select mi
+            )
+            .AsNoTracking()
+            .Distinct()
+            .ToListAsync();
+
+            _childrenByParentId = _allowed
+                .Where(x => x.ParentMenuItemId.HasValue)
+                .GroupBy(x => x.ParentMenuItemId!.Value)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.OrderBy(x => x.SortOrder).ThenBy(x => x.Title).ToList()
+                );
+
+            _rootItems = _allowed
+                .Where(x => x.ParentMenuItemId == null)
+                .OrderBy(x => x.SortOrder)
+                .ThenBy(x => x.Title)
+                .ToList();
+        }
+        catch
+        {
+            ClearMenu();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void ClearMenu()
+    {
+        _allowed = new();
+        _rootItems = new();
+        _childrenByParentId = new();
+    }
+
+    private static List<int> GetSecurityGroupIdsFromClaims(ClaimsPrincipal user)
+    {
+        var ids = new List<int>();
+
+        void AddAll(string type)
+        {
+            foreach (var c in user.FindAll(type))
+            {
+                if (int.TryParse(c.Value, out var id) && id > 0)
+                    ids.Add(id);
+            }
+        }
+
+        AddAll("SecurityGroupId");
+        AddAll("securitygroupid");
+        AddAll("security_group_id");
+
+        return ids.Distinct().ToList();
+    }
+
+    private RenderFragment RenderGroup(SecurityMenuItem item) => @<MudExpansionPanel Text="@item.Title"
+                                                                                             Style="@item.Style"
+                                                                                             Icon="@ResolveIcon(item.IconKey)">
+        @if (_childrenByParentId.TryGetValue(item.MenuItemId, out var kids))
+        {
+            @foreach (var child in kids)
+            {
+                @if (child.ItemType == 1)
+                {
+                    @RenderGroup(child)
+                }
+                else
+                {
+                    @RenderLink(child)
+                }
+            }
+        }
+    </MudExpansionPanel>;
+
+private RenderFragment RenderLink(SecurityMenuItem item) => @<MudNavLink ActiveClass="my-custom-active"
+                                                                             Href="@(item.Href ?? "#")"
+                                                                             Match="@(item.MatchAll ? NavLinkMatch.All : NavLinkMatch.Prefix)"
+                                                                             Class="@item.CssClass"
+                                                                             Style="@item.Style"
+                                                                             Icon="@ResolveIcon(item.IconKey)"
+                                                                             IconSize="@(ResolveSize(item.IconSize) ?? Size.Small)"
+                                                                             IconColor="@(ResolveColor(item.IconColor) ?? Color.Primary)">
+@item.Title
+</MudNavLink>;
+
+private Size? ResolveSize(string? size)
+=> Enum.TryParse<Size>(size ?? "", ignoreCase: true, out var s) ? s : null;
+
+private Color? ResolveColor(string? color)
+=> Enum.TryParse<Color>(color ?? "", ignoreCase: true, out var c) ? c : null;
+
+private string ResolveIcon(string? iconKey)
+{
+if (string.IsNullOrWhiteSpace(iconKey))
+return "";
+
+return iconKey.Trim() switch
+{
+"Chat" => Icons.Material.Filled.Chat,
+"Security" => Icons.Material.Filled.Security,
+"People" => Icons.Material.Filled.People,
+"Title" => Icons.Material.Filled.Title,
+"FolderOpen" => Icons.Material.Filled.FolderOpen,
+"TableView" => Icons.Material.Filled.TableView,
+"AdminPanelSettings" => Icons.Material.Filled.AdminPanelSettings,
+"Handyman" => Icons.Material.Filled.Handyman,
+_ => ""
+};
+}
+}

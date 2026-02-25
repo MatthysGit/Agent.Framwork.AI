@@ -1,0 +1,107 @@
+﻿@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudForm @ref="_form">
+            <MudSelect T="string" Label="Table (Referenced / Primary)" @bind-Value="Model.table_name" Required="true" Disabled="true">
+                @foreach (var t in AllTables.OrderBy(x => x.Name))
+                {
+                    <MudSelectItem Value="@t.Name">@t.Name</MudSelectItem>
+                }
+            </MudSelect>
+            <MudSelect T="string"
+                       Label="Referencing Table"
+                       Value="Model.referencing_table_name"
+                       ValueChanged="async (string v) => await OnReferencingTableChanged(v)"
+                       Required="true">
+                @foreach (var t in AllTables.OrderBy(x => x.Name))
+                {
+                    <MudSelectItem Value="@t.Name">@t.Name</MudSelectItem>
+                }
+            </MudSelect>
+
+            <MudSelect T="string?" Label="Referencing Column" @bind-Value="Model.referencing_column_name">
+                @foreach (var c in _referencingColumns)
+                {
+                    <MudSelectItem Value="@c">@c</MudSelectItem>
+                }
+            </MudSelect>
+        </MudForm>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Save">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public TableReferencing Model { get; set; } = default!;
+    [Parameter] public List<TableDefinition> AllTables { get; set; } = new();
+
+    private MudForm? _form;
+    private List<string> _referencingColumns = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadReferencingColumns();
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+
+    private async Task OnReferencingTableChanged(string value)
+    {
+        Model.referencing_table_name = value;
+        Model.referencing_column_name = null;
+        await LoadReferencingColumns();
+    }
+
+
+    private async Task LoadReferencingColumns()
+    {
+        _referencingColumns.Clear();
+        if (string.IsNullOrWhiteSpace(Model.referencing_table_name))
+            return;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _referencingColumns = await db.TableFieldDefinitions
+            .Where(f => f.table_name == Model.referencing_table_name)
+            .OrderBy(f => f.column_name)
+            .Select(f => f.column_name)
+            .ToListAsync();
+    }
+
+    private async Task Save()
+    {
+        if (_form is null) return;
+        await _form.Validate();
+        if (!_form.IsValid) return;
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+
+            if (Model.id == 0)
+                db.TableReferencings.Add(Model);
+            else
+                db.TableReferencings.Update(Model);
+
+            await db.SaveChangesAsync();
+            Snackbar.Add("Saved.", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Save failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+}

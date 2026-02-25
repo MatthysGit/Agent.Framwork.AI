@@ -1,0 +1,556 @@
+﻿@page "/security/users"
+@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Ai.AgentFramwork.Massar.Web.Services.Security
+@using Microsoft.EntityFrameworkCore
+
+@* CHANGED: use DbContextFactory to avoid concurrent-DbContext operations *@
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+@inject IDialogService Dialog
+@inject ISnackbar Snackbar
+@inject IPasswordService _Passwords;
+
+<MudPaper Class="pa-2" Elevation="1" Rounded="true">
+    <MudContainer MaxWidth="MaxWidth.False" Class="mt-4">
+        <MudGrid Spacing="3">
+            <!-- LEFT -->
+            <MudItem xs="12" >
+                <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                    <MudText Typo="Typo.subtitle2">Users</MudText>
+
+                    <MudButton Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.Add"
+                               OnClick="AddUser">
+                        Add
+                    </MudButton>
+                </MudStack>
+
+                <MudDivider Class="my-3" />
+
+                <MudTextField @bind-Value="_userSearch"
+                              Placeholder="Search users..."
+                              Variant="Variant.Outlined"
+                              Margin="Margin.Dense"
+                              Dense="true"
+                              Typo="Typo.caption"
+                              Immediate="true"
+                              Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search"
+                              Class="mb-2" />
+
+                <MudDataGrid T="AppUser"
+                             Items="FilteredUsers"
+                             Dense="true"
+                             Hover="true"
+                             Bordered="true"
+                             FixedHeader="true"
+                             Height="420px"
+                             Class="users-dg"
+                             RowClick="OnUserRowClick"
+                             RowClassFunc="UserRowClass">
+                    <Columns>
+                        
+                        <PropertyColumn T="AppUser" TProperty="string"
+                                        Typo="Typo.caption"
+                                        Property="x => x.FirstName"
+                                        Title="Name" />
+                        
+                        <PropertyColumn T="AppUser" TProperty="string"
+                                        Typo="Typo.caption"
+                                        Property="x => x.LastName"
+                                        Title="Surname" />
+
+
+                        <PropertyColumn T="AppUser" TProperty="string"
+                                        Typo="Typo.caption"
+                                        Property="x => x.UserName"
+                                        Title="UserName" />
+
+                        <PropertyColumn T="AppUser" TProperty="string"
+                                        Typo="Typo.caption"
+                                        Property="x => x.Email"
+                                        Title="Email" />
+
+                        <TemplateColumn T="AppUser" Title="Role" Sortable="false" Filterable="false">
+                            <CellTemplate Context="ctx">
+                                <MudText Typo="Typo.caption">@RoleName(ctx.Item)</MudText>
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        <TemplateColumn T="AppUser"
+                                        Title=""
+                                        Sortable="false"
+                                        Filterable="false"
+                                        CellClass="users-dg-actions"
+                                        HeaderClass="users-dg-actions">
+                            <CellTemplate Context="ctx">
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit"
+                                               Size="Size.Small"
+                                               Class="ma-0"
+                                               OnClick="@(() => EditUser(ctx.Item.UserId))" />
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                    </Columns>
+                </MudDataGrid>
+
+            </MudItem>
+
+            <!-- RIGHT -->
+          @*   <MudItem xs="12" md="7">
+
+                <MudText Typo="Typo.subtitle2">User Roles</MudText>
+                <MudDivider Class="my-3" />
+
+                @if (_selectedUser is null)
+                {
+                    <MudText Color="Color.Secondary">Select a user.</MudText>
+                }
+                else
+                {
+                    <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <MudText Color="Color.Surface">User: @_selectedUser.FirstName @_selectedUser.LastName</MudText>
+                    </MudStack>
+
+                    <MudGrid Spacing="2" Class="mt-3">
+                        <MudItem xs="12">
+                            <MudPaper Outlined="true" Class="pa-2" Style="height: 435px; overflow:auto;">
+                                <MudText Typo="Typo.caption" Color="Color.Surface" Class="mb-1">
+                                    Tick Roles
+                                </MudText>
+
+                                @foreach (var team in _allTeams)
+                                {
+                                    var teamId = team.TeamId;
+
+                                    <MudStack Row AlignItems="AlignItems.Center" Spacing="1" Class="mt-1">
+                                        <MudCheckBox T="bool"
+                                                     Dense="true"
+                                                     Checked="@IsTeamFullyChecked(teamId)"
+                                                     Indeterminate="@IsTeamIndeterminate(teamId)"
+                                                     CheckedChanged="@((bool v) => OnTeamCheckedChanged(teamId, v))" />
+                                        <MudText Typo="Typo.caption">@team.Name</MudText>
+                                    </MudStack>
+
+                                    <MudStack Class="ml-6" Spacing="0">
+                                        @foreach (var tr in _teamRolesByTeamId.GetValueOrDefault(teamId) ?? new List<TeamRole>())
+                                        {
+                                            var teamRoleId = tr.TeamRoleId;
+
+                                            <MudStack Row AlignItems="AlignItems.Center" Spacing="1" Class="mt-1">
+                                                <MudCheckBox T="bool"
+                                                             Dense="true"
+                                                             Checked="@IsRoleChecked(teamRoleId)"
+                                                             CheckedChanged="@((bool v) => OnRoleCheckedChanged(teamRoleId, v))" />
+                                                <MudText Typo="Typo.caption">@RoleName(tr)</MudText>
+                                            </MudStack>
+                                        }
+                                    </MudStack>
+                                }
+                            </MudPaper>
+                        </MudItem>
+                    </MudGrid>
+                }
+
+            </MudItem> *@
+        </MudGrid>
+    </MudContainer>
+</MudPaper>
+
+<style>
+    /* MudDataGrid tweaks */
+    .users-dg {
+        border-radius: 8px;
+        overflow: hidden;
+    }
+
+    .users-dg-actions {
+        text-align: right;
+        justify-content: flex-end;
+        white-space: nowrap;
+        width: 1%;
+    }
+
+    /* Selected row look */
+    .users-dg-selected > td {
+        background-color: var(--purple) !important;
+    }
+</style>
+
+@code {
+    private List<AppUser> _users = new();
+
+    private List<Team> _allTeams = new();
+    private List<TeamRole> _allTeamRoles = new();
+    private Dictionary<int, List<TeamRole>> _teamRolesByTeamId = new();
+
+    private AppUser? _selectedUser;
+
+    // For fast lookup of assigned roles
+    private HashSet<int> _selectedRoleIds = new();
+
+    // Search
+    private string _userSearch = string.Empty;
+
+    // CHANGED: cancel in-flight work if component is disposed (helps with circuit disconnects)
+    private CancellationTokenSource _cts = new();
+    private bool _disposed;
+
+    private List<AppUser> FilteredUsers
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_userSearch))
+                return _users;
+
+            var s = _userSearch.Trim();
+            return _users
+                .Where(x =>
+                    (!string.IsNullOrWhiteSpace(x.UserName) && x.UserName.Contains(s, StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrWhiteSpace(x.Email) && x.Email.Contains(s, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+        }
+    }
+
+    private bool IsSelected(string userId)
+        => _selectedUser?.UserId == userId;
+
+    // row class function for MudDataGrid
+    private string UserRowClass(AppUser user, int rowNumber)
+        => IsSelected(user.UserId) ? "users-dg-selected" : string.Empty;
+
+    // row click handler for MudDataGrid
+    private async Task OnUserRowClick(DataGridRowClickEventArgs<AppUser> args)
+    {
+        if (args.Item is null) return;
+        await ManageRoles(args.Item.UserId);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        _users = await db.AppUsers
+            .AsNoTracking()
+            .Include(x => x.Role)
+            .OrderBy(x => x.UserName)
+            .ToListAsync(_cts.Token);
+
+        _allTeams = await db.Teams
+            .AsNoTracking()
+            .OrderBy(x => x.Name)
+            .ToListAsync(_cts.Token);
+
+        // IMPORTANT: include Team + Role so labels make sense
+        _allTeamRoles = await db.TeamRoles
+            .AsNoTracking()
+            .Include(x => x.Team)
+            .Include(x => x.Role)
+            .OrderBy(x => x.Team!.Name)
+            .ThenBy(x => x.Role!.Name)
+            .ToListAsync(_cts.Token);
+
+        _teamRolesByTeamId = _allTeamRoles
+            .GroupBy(x => x.TeamId)
+            .ToDictionary(g => g.Key, g => g.ToList());
+    }
+
+    private async Task ReloadUsers()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _users = await db.AppUsers
+            .AsNoTracking()
+            .Include(x => x.Role)
+            .OrderBy(x => x.UserName)
+            .ToListAsync(_cts.Token);
+    }
+
+    private static string RoleName(AppUser u)
+        => u.Role?.Name ?? (u.RoleId is null ? "" : $"RoleId {u.RoleId}");
+
+    private static string RoleName(TeamRole tr)
+    {
+        return tr.Role?.Name ?? $"RoleId {tr.RoleId}";
+    }
+
+    // CHANGED: helper now takes a db instance (no shared DbContext across awaits)
+    private static async Task SyncUserSecurityGroups(AppDbContext db, string userId, IReadOnlyCollection<int>? desiredSecurityGroupIds, CancellationToken ct)
+    {
+        var desired = (desiredSecurityGroupIds ?? Array.Empty<int>())
+            .Distinct()
+            .ToHashSet();
+
+        var existing = await db.UserSecurityGroups
+            .Where(x => x.UserId == userId)
+            .ToListAsync(ct);
+
+        // Remove unselected
+        var toRemove = existing.Where(x => !desired.Contains(x.SecurityGroupId)).ToList();
+        if (toRemove.Count > 0)
+            db.UserSecurityGroups.RemoveRange(toRemove);
+
+        // Add new
+        var existingIds = existing.Select(x => x.SecurityGroupId).ToHashSet();
+        var toAdd = desired
+            .Where(id => !existingIds.Contains(id))
+            .Select(id => new UserSecurityGroup
+            {
+                UserId = userId,
+                SecurityGroupId = id
+            })
+            .ToList();
+
+        if (toAdd.Count > 0)
+            await db.UserSecurityGroups.AddRangeAsync(toAdd, ct);
+    }
+
+    private async Task EditUser(string userId)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var user = await db.AppUsers.AsNoTracking().FirstOrDefaultAsync(x => x.UserId == userId, _cts.Token);
+        if (user is null) return;
+
+        var parameters = new DialogParameters
+        {
+            ["EditUserId"] = user.UserId,
+            ["EditUserName"] = user.UserName,
+            ["EditEmail"] = user.Email,
+            ["EditFirstName"] = user.FirstName,
+            ["EditLastName"] = user.LastName,
+            ["EditIsActive"] = user.IsActive,
+            ["EditRoleId"] = user.RoleId
+        };
+
+        var dialog = await Dialog.ShowAsync<AddUserDialog>(
+            "Edit User",
+            parameters,
+            new DialogOptions { CloseButton = true, FullWidth = true, MaxWidth = MaxWidth.Small });
+
+        var result = await dialog.Result;
+        if (result?.Canceled != false) return;
+
+        var dto = (AddUserDialog.UserUpsertDto)result.Data;
+
+        var newUserName = dto.UserName.Trim();
+        var newEmail = dto.Email.Trim();
+
+        var exists = await db.AppUsers.AnyAsync(x =>
+            x.UserId != userId &&
+            (x.UserName == newUserName || x.Email == newEmail), _cts.Token);
+
+        if (exists)
+        {
+            Snackbar.Add("UserName or Email already exists.", Severity.Error);
+            return;
+        }
+
+        var tracked = await db.AppUsers.FirstOrDefaultAsync(x => x.UserId == userId, _cts.Token);
+        if (tracked is null) return;
+
+        tracked.UserName = newUserName;
+        tracked.Email = newEmail;
+        tracked.FirstName = dto.FirstName;
+        tracked.LastName = dto.LastName;
+        tracked.IsActive = dto.IsActive;
+        tracked.RoleId = dto.RoleId;
+
+        if (!string.IsNullOrWhiteSpace(dto.Password))
+            tracked.PasswordHash = _Passwords.Hash(dto.Password);
+
+        // ✅ persist SecurityGroup links
+        await SyncUserSecurityGroups(db, userId, dto.SecurityGroupIds, _cts.Token);
+
+        await db.SaveChangesAsync(_cts.Token);
+
+        Snackbar.Add("User updated.", Severity.Success);
+
+        await ReloadUsers();
+
+        if (_selectedUser?.UserId == userId)
+            await ManageRoles(userId);
+    }
+
+    private async Task AddUser()
+    {
+        var dialog = await Dialog.ShowAsync<AddUserDialog>(
+            "Add User",
+            new DialogOptions { CloseButton = true, FullWidth = true, MaxWidth = MaxWidth.Small });
+
+        var result = await dialog.Result;
+        if (result?.Canceled != false) return;
+
+        var dto = (AddUserDialog.UserUpsertDto)result.Data;
+
+        var userName = dto.UserName.Trim();
+        var email = dto.Email.Trim();
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var exists = await db.AppUsers.AnyAsync(x => x.UserName == userName || x.Email == email, _cts.Token);
+        if (exists)
+        {
+            Snackbar.Add("UserName or Email already exists.", Severity.Error);
+            return;
+        }
+
+        var user = new AppUser
+        {
+            UserId = Guid.NewGuid().ToString("N"),
+            UserName = userName,
+            Email = email,
+            FirstName = dto.FirstName,
+            LastName = dto.LastName,
+            IsActive = dto.IsActive,
+            CreatedAtUtc = DateTime.UtcNow,
+            PasswordHash = _Passwords.Hash(dto.Password ?? string.Empty),
+            RoleId = dto.RoleId
+        };
+
+        db.AppUsers.Add(user);
+        await db.SaveChangesAsync(_cts.Token);
+
+        // ✅ persist SecurityGroup links for new user
+        await SyncUserSecurityGroups(db, user.UserId, dto.SecurityGroupIds, _cts.Token);
+        await db.SaveChangesAsync(_cts.Token);
+
+        Snackbar.Add("User created.", Severity.Success);
+        await ReloadUsers();
+    }
+
+    private async Task ManageRoles(string userId)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        _selectedUser = await db.AppUsers.AsNoTracking().FirstOrDefaultAsync(x => x.UserId == userId, _cts.Token);
+        if (_selectedUser is null) return;
+
+        var roleIds = await db.UserTeamRoles
+            .AsNoTracking()
+            .Where(x => x.UserId == userId)
+            .Select(x => x.TeamRoleId)
+            .ToListAsync(_cts.Token);
+
+        _selectedRoleIds = roleIds.ToHashSet();
+    }
+
+    private bool IsRoleChecked(int teamRoleId) => _selectedRoleIds.Contains(teamRoleId);
+
+    private bool IsTeamFullyChecked(int teamId)
+    {
+        var roles = _teamRolesByTeamId.GetValueOrDefault(teamId);
+        if (roles is null || roles.Count == 0) return false;
+        return roles.All(r => _selectedRoleIds.Contains(r.TeamRoleId));
+    }
+
+    private bool IsTeamIndeterminate(int teamId)
+    {
+        var roles = _teamRolesByTeamId.GetValueOrDefault(teamId);
+        if (roles is null || roles.Count == 0) return false;
+
+        var any = roles.Any(r => _selectedRoleIds.Contains(r.TeamRoleId));
+        var all = roles.All(r => _selectedRoleIds.Contains(r.TeamRoleId));
+        return any && !all;
+    }
+
+    private Task OnRoleCheckedChanged(int teamRoleId, bool isChecked) => ToggleRole(teamRoleId, isChecked);
+    private Task OnTeamCheckedChanged(int teamId, bool isChecked) => ToggleTeam(teamId, isChecked);
+
+    private async Task ToggleRole(int teamRoleId, bool isChecked)
+    {
+        if (_selectedUser is null) return;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        if (isChecked)
+        {
+            if (_selectedRoleIds.Add(teamRoleId))
+            {
+                db.UserTeamRoles.Add(new UserTeamRole
+                {
+                    UserId = _selectedUser.UserId,
+                    TeamRoleId = teamRoleId,
+                    AddedAtUtc = DateTime.UtcNow
+                });
+
+                await db.SaveChangesAsync(_cts.Token);
+            }
+        }
+        else
+        {
+            if (_selectedRoleIds.Remove(teamRoleId))
+            {
+                var row = await db.UserTeamRoles
+                    .FirstOrDefaultAsync(x => x.UserId == _selectedUser.UserId && x.TeamRoleId == teamRoleId, _cts.Token);
+
+                if (row is not null)
+                {
+                    db.UserTeamRoles.Remove(row);
+                    await db.SaveChangesAsync(_cts.Token);
+                }
+            }
+        }
+    }
+
+    private async Task ToggleTeam(int teamId, bool isChecked)
+    {
+        if (_selectedUser is null) return;
+
+        var roles = _teamRolesByTeamId.GetValueOrDefault(teamId) ?? new List<TeamRole>();
+        if (roles.Count == 0) return;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        if (isChecked)
+        {
+            // Add all roles in that team
+            var toAdd = roles.Where(r => !_selectedRoleIds.Contains(r.TeamRoleId)).ToList();
+            if (toAdd.Count == 0) return;
+
+            foreach (var r in toAdd)
+            {
+                _selectedRoleIds.Add(r.TeamRoleId);
+                db.UserTeamRoles.Add(new UserTeamRole
+                {
+                    UserId = _selectedUser.UserId,
+                    TeamRoleId = r.TeamRoleId,
+                    AddedAtUtc = DateTime.UtcNow
+                });
+            }
+
+            await db.SaveChangesAsync(_cts.Token);
+        }
+        else
+        {
+            // Remove all roles in that team
+            var roleIds = roles.Select(r => r.TeamRoleId).ToList();
+            foreach (var rid in roleIds)
+                _selectedRoleIds.Remove(rid);
+
+            var rows = await db.UserTeamRoles
+                .Where(x => x.UserId == _selectedUser.UserId && roleIds.Contains(x.TeamRoleId))
+                .ToListAsync(_cts.Token);
+
+            if (rows.Count > 0)
+            {
+                db.UserTeamRoles.RemoveRange(rows);
+                await db.SaveChangesAsync(_cts.Token);
+            }
+        }
+    }
+
+    private async Task RemoveUserRole(int teamRoleId)
+    {
+        // chip close = untick role
+        await ToggleRole(teamRoleId, false);
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        try { _cts.Cancel(); } catch { }
+        _cts.Dispose();
+    }
+}

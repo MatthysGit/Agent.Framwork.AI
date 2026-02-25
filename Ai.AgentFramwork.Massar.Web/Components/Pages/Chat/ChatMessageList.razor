@@ -1,0 +1,166 @@
+@inject IJSRuntime JS
+
+<div class="message-list-container" @ref="_scrollEl" @onscroll="HandleScroll">
+    <chat-messages class="page-width message-list" in-progress="@(InProgressMessage is not null)">
+        @foreach (var message in Messages)
+        {
+            <ChatMessageItem @key="@message" Message="@message"/>
+        }
+
+        @if (InProgressMessage is not null)
+        {
+            <ChatMessageItem Message="@InProgressMessage" InProgress="true"/>
+            @* <LoadingSpinner/> *@
+        }
+        else if (IsEmpty)
+        {
+            <div class="no-messages">@NoMessagesContent</div>
+        }
+
+        <div class="chat-bottom-anchor"></div>
+    </chat-messages>
+
+    @*     @if (_showScrollButton)
+    {
+        <button class="scroll-bottom-btn" title="Scroll to bottom" @onclick="ScrollToBottom">
+            ↓
+        </button>
+    } *@
+</div>
+
+<script>
+    // Self-contained scroll helper (no extra JS files required)
+    window.blazorChatScroll = window.blazorChatScroll || {
+
+        smoothToBottom: function (el) {
+            if (!el) return;
+            el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+        },
+
+        instantToBottom: function (el) {
+            if (!el) return;
+            el.scrollTop = el.scrollHeight;
+        },
+
+        isNearBottom: function (el, threshold) {
+            if (!el) return true;
+            threshold = threshold || 140; // px
+            return (el.scrollHeight - el.scrollTop - el.clientHeight) < threshold;
+        }
+    };
+</script>
+
+<style>
+    /* Scroll container for messages */
+    .message-list-container {
+        height: 100%;
+        overflow-y: auto;
+        min-height: 0; /* critical inside flex column */
+        padding: 16px;
+        position: relative; /* anchor the floating button */
+    }
+
+    .chat-bottom-anchor {
+        height: 1px;
+    }
+
+    /* Floating scroll-to-bottom button */
+    .scroll-bottom-btn {
+        position: fixed;
+        left: 50%;
+        bottom: 110px;
+        transform: translateX(-50%);
+    }
+
+        .scroll-bottom-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(0,0,0,0.28);
+            opacity: 1;
+        }
+</style>
+
+@code {
+
+    // Pass the active conversation id from the parent. When it changes, we snap to bottom.
+    [Parameter] public Guid? ConversationId { get; set; }
+
+    [Parameter] public required List<ChatMessage> Messages { get; set; }
+
+    [Parameter] public ChatMessage? InProgressMessage { get; set; }
+
+    [Parameter] public RenderFragment? NoMessagesContent { get; set; }
+
+    private bool IsEmpty =>
+        !Messages.Any(m => (m.Role == ChatRole.User || m.Role == ChatRole.Assistant) && !string.IsNullOrEmpty(m.Text));
+
+    private ElementReference _scrollEl;
+
+    private int _lastCount;
+    private bool _lastInProgress;
+    private Guid? _lastConversationId;
+
+    private bool _showScrollButton;
+    private bool _isNearBottom = true;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        var count = Messages?.Count ?? 0;
+        var inProgress = InProgressMessage is not null;
+        var convoChanged = ConversationId != _lastConversationId;
+
+        // First render OR conversation changed => snap instantly to bottom
+        if (firstRender || convoChanged)
+        {
+            _lastConversationId = ConversationId;
+            _lastCount = count;
+            _lastInProgress = inProgress;
+
+            await Task.Yield();
+            await JS.InvokeVoidAsync("blazorChatScroll.instantToBottom", _scrollEl);
+
+            _isNearBottom = true;
+            _showScrollButton = false;
+            return;
+        }
+
+        // Track whether message count / streaming state changed
+        var changed = count != _lastCount || inProgress != _lastInProgress;
+        _lastCount = count;
+        _lastInProgress = inProgress;
+
+        if (!changed)
+            return;
+
+        // Only auto-scroll if user is already near bottom (ChatGPT behavior)
+        _isNearBottom = await JS.InvokeAsync<bool>("blazorChatScroll.isNearBottom", _scrollEl, 140);
+
+        if (_isNearBottom)
+        {
+            await Task.Yield();
+            await JS.InvokeVoidAsync("blazorChatScroll.smoothToBottom", _scrollEl);
+            _showScrollButton = false;
+        }
+        else
+        {
+            _showScrollButton = true;
+        }
+    }
+
+    private async Task HandleScroll()
+    {
+        _isNearBottom = await JS.InvokeAsync<bool>("blazorChatScroll.isNearBottom", _scrollEl, 140);
+        _showScrollButton = !_isNearBottom;
+
+        // Avoid over-render loops: only update UI when the state actually changes
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ScrollToBottom()
+    {
+        await JS.InvokeVoidAsync("blazorChatScroll.smoothToBottom", _scrollEl);
+        _showScrollButton = false;
+        _isNearBottom = true;
+        await InvokeAsync(StateHasChanged);
+    }
+
+}

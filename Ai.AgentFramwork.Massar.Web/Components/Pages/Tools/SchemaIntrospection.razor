@@ -1,0 +1,147 @@
+﻿@page "/settings/schema-introspection"
+@using Ai.AgentFramwork.Massar.Web.Services.SchemaIntrospection
+@inject ISchemaIntrospectionService IntrospectionService
+
+
+<MudPaper Class="pa-4" Elevation="1" Rounded="true">
+    <MudStack Spacing="2">
+        <MudText Typo="Typo.h6">Data Dictionary Agent</MudText>
+
+
+        <MudStack Direction="row" Spacing="2" AlignItems="AlignItems.Center">
+            <div>
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           Disabled="@_running"
+                           Size="Size.Small"
+                           OnClick="RunAsync">
+                    Run
+                </MudButton>
+
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Error"
+                           Size="Size.Small"
+                           Disabled="@(!_running)"
+                           OnClick="Cancel">
+                    Cancel
+                </MudButton>
+            </div>
+            <MudSpacer/>
+
+
+        </MudStack>
+
+        @if (_running)
+        {
+            <MudProgressLinear Indeterminate="@(!_pct.HasValue)"
+                               Value="@(_pct ?? 0)"
+                               Rounded="true"/>
+            <MudText Typo="Typo.caption" Class="mt-n1">@_status</MudText>
+        }
+
+        <MudDivider Class="my-2"/>
+
+        <MudText Typo="Typo.subtitle2">Progress Log</MudText>
+
+        <div class="cmd-window">
+            <div class="cmd-header">Ai.Dev\ProgressLog</div>
+
+            <div class="cmd-body">
+                @if (ProgressLines.Count == 0)
+                {
+                    <div>></div>
+                }
+                else
+                {
+                    @foreach (var line in ProgressLines)
+                    {
+                        <div>@line</div>
+                    }
+                }
+
+                @if (_running)
+                {
+                    <span class="cursor">_</span>
+                }
+            </div>
+        </div>
+
+    </MudStack>
+</MudPaper>
+
+@code {
+    private readonly List<string> ProgressLines = new();
+
+    private bool _running;
+    private string _status = "";
+    private double? _pct;
+
+    private CancellationTokenSource? _cts;
+
+    private void TestWrite()
+    {
+        ProgressLines.Add($"[{DateTime.Now:HH:mm:ss}] Hello from cmd log");
+        StateHasChanged();
+    }
+
+    private async Task RunAsync()
+    {
+        if (_running) return;
+
+        _running = true;
+        _pct = null;
+        _status = "Starting...";
+        ProgressLines.Clear();
+
+        _cts = new CancellationTokenSource();
+
+        var progress = new Progress<SchemaIntrospectionProgress>(p =>
+        {
+            // IMPORTANT: this callback can run off the UI context; always marshal to UI thread
+            _ = InvokeAsync(() =>
+            {
+                _status = $"{p.Phase}: {p.Message}";
+
+                if (p.Current.HasValue && p.Total.HasValue && p.Total.Value > 0)
+                    _pct = (double)p.Current.Value / p.Total.Value * 100.0;
+                else
+                    _pct = null;
+
+                var prefix = DateTime.Now.ToString("HH:mm:ss");
+                var step = p.Current.HasValue && p.Total.HasValue ? $" ({p.Current}/{p.Total})" : "";
+                ProgressLines.Add($"{prefix} - {p.Phase}{step}: {p.Message}");
+
+                StateHasChanged();
+            });
+        });
+
+        try
+        {
+            await IntrospectionService.RunAsync(progress, _cts.Token);
+
+            ProgressLines.Add($"{DateTime.Now:HH:mm:ss} - Done: Completed successfully.");
+        }
+        catch (OperationCanceledException)
+        {
+            ProgressLines.Add($"{DateTime.Now:HH:mm:ss} - Canceled.");
+        }
+        catch (Exception ex)
+        {
+            ProgressLines.Add($"{DateTime.Now:HH:mm:ss} - Error: {ex.Message}");
+        }
+        finally
+        {
+            _running = false;
+            _cts?.Dispose();
+            _cts = null;
+
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Cancel()
+    {
+        _cts?.Cancel();
+    }
+
+}

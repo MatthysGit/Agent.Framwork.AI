@@ -1,0 +1,35 @@
+﻿@using Ai.AgentFramwork.Massar.Web.DBModels
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudTextField Label="Name" @bind-Value="Model.Name" Required="true" Immediate="true"/>
+            <MudTextField Label="Description" @bind-Value="Model.Description" Lines="3"/>
+            <MudSwitch T="bool?" Label="Active" @bind-Checked="Model.IsActive"/>
+        </MudStack>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="Cancel" Variant="Variant.Text">Cancel</MudButton>
+        <MudButton OnClick="Save" Variant="Variant.Filled" Color="Color.Primary">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public SecurityGroup Model { get; set; } = default!;
+    [Parameter] public bool IsNew { get; set; }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+
+    private void Save()
+    {
+        if (string.IsNullOrWhiteSpace(Model.Name))
+            return;
+
+        MudDialog.Close(DialogResult.Ok(Model));
+    }
+
+}

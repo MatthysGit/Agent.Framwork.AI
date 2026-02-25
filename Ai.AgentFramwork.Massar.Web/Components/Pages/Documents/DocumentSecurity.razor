@@ -1,0 +1,534 @@
+﻿@page "/security/documents"
+
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.Components.Authorization
+@using MudBlazor
+
+@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Ai.AgentFramwork.Massar.Web.Models
+
+@inject AppDbContext Db
+@inject ISnackbar Snackbar
+@inject AuthenticationStateProvider AuthStateProvider
+
+<MudGrid Spacing="3" Class="mt-3">
+
+    <!-- LEFT: Role + List -->
+    <MudItem xs="12" md="5">
+        <MudPaper Class="pa-3">
+
+            <MudStack Spacing="2">
+                <MudText Typo="Typo.subtitle2">Role</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Surface">
+                    Select a Role, then choose one or more files under each Document Category.
+                </MudText>
+
+                <MudAutocomplete T="Role"
+                                 Dense="true"
+                                 Clearable="true"
+                                 ResetValueOnEmptyText="true"
+                                 CoerceText="true"
+                                 CoerceValue="true"
+                                 ToStringFunc="@(r => r?.Name ?? string.Empty)"
+                                 SearchFunc="SearchRolesAsync"
+                                 Value="_selectedRole"
+                                 ValueChanged="@(EventCallback.Factory.Create<Role?>(this, OnRoleChangedAsync))"
+                                 Placeholder="Search role..."
+                                 Adornment="Adornment.Start"
+                                 AdornmentIcon="@Icons.Material.Filled.Search" />
+
+                <MudDivider Class="my-2" />
+
+                <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                    <MudText Typo="Typo.subtitle2">Document Categories & Files</MudText>
+
+                    <MudStack Row Spacing="1">
+                        <MudButton Size="Size.Small"
+                                   Variant="Variant.Outlined"
+                                   Disabled="@(!_hasData || _selectedRole is null)"
+                                   OnClick="@(async (MouseEventArgs _) => await SelectAllAsync())">
+                            Select all
+                        </MudButton>
+
+                        <MudButton Size="Size.Small"
+                                   Variant="Variant.Text"
+                                   Disabled="@(!_hasData || _selectedRole is null)"
+                                   OnClick="@(async (MouseEventArgs _) => await ClearAllAsync())">
+                            Clear all
+                        </MudButton>
+                    </MudStack>
+                </MudStack>
+
+                <MudText Typo="Typo.caption" Color="Color.Surface">
+                    Selected: @_selectedDocCount files
+                </MudText>
+
+                <MudDivider Class="my-2" />
+
+                @if (_isLoading)
+                {
+                    <MudProgressLinear Indeterminate="true" />
+                }
+                else if (_selectedRole is null)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        Select a role to load and edit access.
+                    </MudText>
+                }
+                else if (!_hasData)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        No documents found.
+                    </MudText>
+                }
+                else
+                {
+                    <MudTextField @bind-Value="_filter"
+                                  Dense="true"
+                                  Placeholder="Filter categories/files..."
+                                  Immediate="true"
+                                  Adornment="Adornment.Start"
+                                  AdornmentIcon="@Icons.Material.Filled.FilterList" />
+
+                    <MudDivider Class="my-2" />
+
+                    <!-- Category header -> files list (matches example) -->
+                    <MudPaper Elevation="0"
+                              Class="pa-0"
+                              Style="max-height: 520px; overflow:auto;">
+
+                        <MudStack Spacing="2" Class="pa-2">
+                            @foreach (var grp in FilteredGroups())
+                            {
+                                <MudStack Spacing="1" @key="grp.CategoryKey">
+
+                                    <MudText Typo="Typo.subtitle2" Style="font-weight: 600;">
+                                        @grp.CategoryName
+                                    </MudText>
+
+                                    <MudDivider />
+
+                                    <MudStack Spacing="0" Style="padding-left: 24px;">
+                                        @foreach (var f in grp.Files)
+                                        {
+                                            <div @key="f.DocumentId">
+                                                <MudCheckBox T="bool"
+                                                             Dense="true"
+                                                             DisableRipple="true"
+                                                             Color="Color.Primary"
+                                                             Value="@GetDraft(f.DocumentId).CanRead"
+                                                             ValueChanged="@((bool v) => SetDraft(f.DocumentId, nameof(DocumentRoleAccess.CanRead), v))">
+                                                    <MudText Typo="Typo.body2">@f.SourceName</MudText>
+                                                </MudCheckBox>
+                                            </div>
+                                        }
+                                    </MudStack>
+
+                                </MudStack>
+                            }
+                        </MudStack>
+
+                    </MudPaper>
+                }
+            </MudStack>
+
+        </MudPaper>
+    </MudItem>
+
+    <!-- RIGHT: Actions -->
+    <MudItem xs="12" md="7">
+        <MudPaper Class="pa-3">
+            <MudStack Spacing="2">
+                <MudText Typo="Typo.subtitle2">Access Editor</MudText>
+
+                <MudDivider Class="my-2" />
+
+                <MudStack Row Spacing="2" AlignItems="AlignItems.Center">
+                    <MudButton Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               Disabled="@(!_canSave)"
+                               OnClick="@(async (MouseEventArgs _) => await SaveAsync())">
+                        Save
+                    </MudButton>
+
+                    <MudButton Variant="Variant.Outlined"
+                               Disabled="@(!_hasData || _selectedRole is null)"
+                               OnClick="@(async (MouseEventArgs _) => await ReloadRoleAccessAsync())">
+                        Reload
+                    </MudButton>
+
+                    @if (_selectedRole is not null)
+                    {
+                        <MudChip T="string" Color="Color.Info" Variant="Variant.Outlined">
+                            Role: @_selectedRole.Name
+                        </MudChip>
+                    }
+
+                    @if (_lastLoadedCount >= 0)
+                    {
+                        <MudChip T="string" Color="Color.Default" Variant="Variant.Outlined">
+                            Loaded: @_lastLoadedCount saved rows
+                        </MudChip>
+                    }
+                </MudStack>
+
+                @if (!string.IsNullOrWhiteSpace(_saveResultText))
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true">
+                        @_saveResultText
+                    </MudAlert>
+                }
+            </MudStack>
+        </MudPaper>
+    </MudItem>
+
+</MudGrid>
+
+@code {
+    private List<Role> _roles = new();
+    private Role? _selectedRole;
+
+    // flattened docs for access + grouped view
+    private List<DocNode> _docs = new();
+    private List<CategoryGroup> _groups = new();
+
+    // Draft access for currently selected role (local edits; Save applies to DB)
+    private readonly Dictionary<Guid, AccessDraft> _draft = new();
+
+    private bool _isLoading = false;
+    private string _filter = string.Empty;
+
+    private int _lastLoadedCount = -1;
+    private string? _saveResultText;
+
+    private bool _hasData => _groups.Count > 0;
+    private bool _canSave => !_isLoading && _selectedRole is not null && _hasData;
+
+    private int _selectedDocCount =>
+        _draft.Values.Count(v => v.CanRead || v.CanDownload || v.CanManage);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _isLoading = true;
+
+        try
+        {
+            _roles = await Db.Roles
+                .AsNoTracking()
+                .Where(r => r.IsActive)
+                .OrderBy(r => r.Name)
+                .ToListAsync();
+
+            await LoadDocumentsGroupedByCategoryAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load page data: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task LoadDocumentsGroupedByCategoryAsync()
+    {
+        // 1) Categories + documents through mapping table
+        var mapped = await (
+            from m in Db.DocumentCategoryMaps.AsNoTracking()
+            join c in Db.DocumentCategories.AsNoTracking()
+                on m.DocumentCategoryId equals c.DocumentCategoryId
+            join d in Db.Documents.AsNoTracking()
+                on m.DocumentId equals d.DocumentId
+            where c.IsActive
+            select new DocNode(
+                d.DocumentId,
+                d.SourceName,
+                c.DocumentCategoryId,
+                c.Name
+            )
+        ).ToListAsync();
+
+        // 2) Uncategorized docs = docs without any map rows
+        var uncategorized = await Db.Documents
+            .AsNoTracking()
+            .Where(d => !Db.DocumentCategoryMaps.Any(m => m.DocumentId == d.DocumentId))
+            .OrderBy(d => d.SourceName)
+            .Select(d => new DocNode(
+                d.DocumentId,
+                d.SourceName,
+                null,
+                "Uncategorized"
+            ))
+            .ToListAsync();
+
+        // 3) Flatten docs (for SelectAll/ClearAll/Save loops)
+        // If a document is mapped to multiple categories, it will appear multiple times in mapped.
+        // We want unique docs in _docs for access saving, so de-dupe by DocumentId here.
+        _docs = mapped
+            .Concat(uncategorized)
+            .GroupBy(x => x.DocumentId)
+            .Select(g => g.First())
+            .OrderBy(x => x.SourceName)
+            .ToList();
+
+        // 4) Build groups for UI (Category -> Files)
+        _groups = mapped
+            .Concat(uncategorized)
+            .GroupBy(x => new { x.CategoryId, x.CategoryName })
+            .Select(g => new CategoryGroup(
+                CategoryKey: g.Key.CategoryId?.ToString() ?? "uncategorized",
+                CategoryId: g.Key.CategoryId,
+                CategoryName: g.Key.CategoryName,
+                Files: g.OrderBy(x => x.SourceName).ToList()
+            ))
+            .OrderBy(g => g.CategoryName)
+            .ToList();
+    }
+
+    private Task<IEnumerable<Role>> SearchRolesAsync(string value, CancellationToken token)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return Task.FromResult(_roles.AsEnumerable());
+
+        var v = value.Trim();
+        return Task.FromResult(_roles.Where(r => r.Name.Contains(v, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private async Task OnRoleChangedAsync(Role? role)
+    {
+        _selectedRole = role;
+        _saveResultText = null;
+        _draft.Clear();
+        _lastLoadedCount = -1;
+
+        if (_selectedRole is null)
+            return;
+
+        await ReloadRoleAccessAsync();
+    }
+
+    private async Task ReloadRoleAccessAsync()
+    {
+        if (_selectedRole is null)
+            return;
+
+        _isLoading = true;
+        _saveResultText = null;
+
+        try
+        {
+            var roleId = _selectedRole.RoleId;
+
+            var rows = await Db.DocumentRoleAccesses
+                .AsNoTracking()
+                .Where(x => x.RoleId == roleId && x.IsActive)
+                .ToListAsync();
+
+            _draft.Clear();
+
+            // Seed all docs with false so UI always has entries
+            foreach (var d in _docs)
+                _draft[d.DocumentId] = new AccessDraft(d.DocumentId);
+
+            // Apply existing saved access
+            foreach (var r in rows)
+            {
+                if (!_draft.ContainsKey(r.DocumentId))
+                    _draft[r.DocumentId] = new AccessDraft(r.DocumentId);
+
+                _draft[r.DocumentId].CanRead = r.CanRead;
+                _draft[r.DocumentId].CanDownload = r.CanDownload;
+                _draft[r.DocumentId].CanManage = r.CanManage;
+            }
+
+            _lastLoadedCount = rows.Count;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load role access: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private AccessDraft GetDraft(Guid docId)
+    {
+        if (!_draft.TryGetValue(docId, out var d))
+        {
+            d = new AccessDraft(docId);
+            _draft[docId] = d;
+        }
+
+        return d;
+    }
+
+    private void SetDraft(Guid docId, string prop, bool value)
+    {
+        _saveResultText = null;
+
+        var d = GetDraft(docId);
+
+        if (prop == nameof(DocumentRoleAccess.CanRead)) d.CanRead = value;
+        if (prop == nameof(DocumentRoleAccess.CanDownload)) d.CanDownload = value;
+        if (prop == nameof(DocumentRoleAccess.CanManage)) d.CanManage = value;
+
+        StateHasChanged();
+    }
+
+    private Task SelectAllAsync()
+    {
+        _saveResultText = null;
+
+        foreach (var doc in _docs)
+            GetDraft(doc.DocumentId).CanRead = true;
+
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private Task ClearAllAsync()
+    {
+        _saveResultText = null;
+
+        foreach (var doc in _docs)
+        {
+            var d = GetDraft(doc.DocumentId);
+            d.CanRead = false;
+            d.CanDownload = false;
+            d.CanManage = false;
+        }
+
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private IEnumerable<CategoryGroup> FilteredGroups()
+    {
+        var f = _filter?.Trim();
+        if (string.IsNullOrWhiteSpace(f))
+            return _groups;
+
+        return _groups
+            .Select(g =>
+            {
+                var files = g.Files
+                    .Where(x =>
+                        g.CategoryName.Contains(f, StringComparison.OrdinalIgnoreCase)
+                        || (x.SourceName ?? string.Empty).Contains(f, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                return new CategoryGroup(g.CategoryKey, g.CategoryId, g.CategoryName, files);
+            })
+            .Where(g => g.Files.Count > 0);
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_selectedRole is null)
+            return;
+
+        _isLoading = true;
+        _saveResultText = null;
+
+        try
+        {
+            var roleId = _selectedRole.RoleId;
+
+            Snackbar.Add($"Saving selections: {_selectedDocCount} files", Severity.Normal);
+
+            var existing = await Db.DocumentRoleAccesses
+                .Where(x => x.RoleId == roleId)
+                .ToListAsync();
+
+            var map = existing.ToDictionary(x => x.DocumentId, x => x);
+
+            int added = 0, updated = 0, deactivated = 0;
+
+            foreach (var doc in _docs)
+            {
+                var docId = doc.DocumentId;
+                var d = GetDraft(docId);
+
+                var any = d.CanRead || d.CanDownload || d.CanManage;
+
+                if (!map.TryGetValue(docId, out var row))
+                {
+                    if (!any)
+                        continue;
+
+                    row = new DocumentRoleAccess
+                    {
+                        DocumentId = docId,
+                        RoleId = roleId,
+                        IsActive = true,
+                        CreatedUtc = DateTime.UtcNow,
+                        ModifiedUtc = DateTime.UtcNow
+                    };
+
+                    Db.DocumentRoleAccesses.Add(row);
+                    map[docId] = row;
+                    added++;
+                }
+
+                if (!any)
+                {
+                    if (row.IsActive)
+                    {
+                        row.IsActive = false;
+                        row.ModifiedUtc = DateTime.UtcNow;
+                        deactivated++;
+                    }
+                    continue;
+                }
+
+                var wasActive = row.IsActive;
+
+                row.IsActive = true;
+                row.CanRead = d.CanRead;
+                row.CanDownload = true;
+                row.CanManage = d.CanManage;
+                row.ModifiedUtc = DateTime.UtcNow;
+
+                if (wasActive || row.CreatedUtc != default)
+                    updated++;
+            }
+
+            var changed = await Db.SaveChangesAsync();
+
+            _saveResultText = $"Saved. Added {added}, updated {updated}, deactivated {deactivated}. (EF changes: {changed})";
+            Snackbar.Add(_saveResultText, Severity.Success);
+
+            await ReloadRoleAccessAsync();
+        }
+        catch (DbUpdateException ex)
+        {
+            Snackbar.Add($"Save failed (DB): {ex.Message} | Inner: {ex.InnerException?.Message}", Severity.Error);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Save failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private sealed class AccessDraft
+    {
+        public AccessDraft(Guid documentId) => DocumentId = documentId;
+
+        public Guid DocumentId { get; }
+        public bool CanRead { get; set; }
+        public bool CanDownload { get; set; }
+        public bool CanManage { get; set; }
+    }
+
+    private sealed record DocNode(Guid DocumentId, string? SourceName, int? CategoryId, string CategoryName);
+    private sealed record CategoryGroup(string CategoryKey, int? CategoryId, string CategoryName, List<DocNode> Files);
+}

@@ -1,0 +1,81 @@
+﻿using Microsoft.Extensions.AI;
+
+namespace Ai.AgentFramwork.Massar.Web.Services.Chat;
+
+/// <summary>
+/// Holds in-memory chat state for the current user/session:
+/// transcript, streaming message, cancellation, active conversation id, and created assistant attachments.
+/// </summary>
+public sealed class ChatSession
+{
+    private readonly List<ChatMessage> _messages = new();
+
+    private ChatMessage? _currentResponseMessage;
+    private CancellationTokenSource? _currentResponseCancellation;
+
+    private readonly List<ChatAttachmentInfo> _createdAssistantAttachments = new();
+
+    public event Action? OnMessagesUpdated;
+
+    public Guid? ActiveConversationId { get; private set; }
+
+    public IReadOnlyList<ChatMessage> Messages => _messages;
+
+    public IReadOnlyList<ChatAttachmentInfo> CreatedAssistantAttachments => _createdAssistantAttachments;
+
+    public ChatMessage? CurrentResponseMessage => _currentResponseMessage;
+
+    public void SetActiveConversation(Guid? id) => ActiveConversationId = id;
+
+    public void ReplaceMessages(IEnumerable<ChatMessage> messages)
+    {
+        _messages.Clear();
+        _messages.AddRange(messages);
+        OnMessagesUpdated?.Invoke();
+    }
+
+    public void AddMessage(ChatMessage message) => _messages.Add(message);
+
+    public CancellationToken BeginNewStreamingTurn()
+    {
+        CancelAnyCurrentResponse(addPartialToTranscript: true);
+
+        _currentResponseCancellation = new CancellationTokenSource();
+        return _currentResponseCancellation.Token;
+    }
+
+    public void SetStreamingMessage(ChatMessage assistantInProgress)
+        => _currentResponseMessage = assistantInProgress;
+
+    public void ClearStreamingMessage()
+        => _currentResponseMessage = null;
+
+    public void TrackAssistantAttachment(ChatAttachmentInfo attachment)
+        => _createdAssistantAttachments.Add(attachment);
+
+    public void ClearAssistantAttachments()
+        => _createdAssistantAttachments.Clear();
+
+    public void StartNewChat()
+    {
+        CancelAnyCurrentResponse(addPartialToTranscript: false);
+
+        ActiveConversationId = null;
+        _messages.Clear();
+
+        _currentResponseMessage = null;
+        _createdAssistantAttachments.Clear();
+
+        OnMessagesUpdated?.Invoke();
+    }
+
+    public void CancelAnyCurrentResponse(bool addPartialToTranscript)
+    {
+        if (addPartialToTranscript && _currentResponseMessage is not null)
+            _messages.Add(_currentResponseMessage);
+
+        _currentResponseCancellation?.Cancel();
+        _currentResponseCancellation = null;
+        _currentResponseMessage = null;
+    }
+}

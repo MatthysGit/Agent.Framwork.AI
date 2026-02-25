@@ -1,0 +1,183 @@
+@inject IJSRuntime JS
+
+<EditForm Model="@(this)" OnValidSubmit="@SendMessageAsync">
+    <div class="chatgpt-input page-width @(Disabled ? "is-disabled" : "")"
+         @ondragenter="OnDragEnter"
+         @ondragleave="OnDragLeave"
+         @ondragover="OnDragOver"
+         @ondragover:preventDefault
+         @ondrop="OnDrop"
+         @ondrop:preventDefault>
+
+        @if (!Disabled && isDragOver)
+        {
+            <div class="drop-overlay">
+                Drop files to attach
+            </div>
+        }
+
+        @if (selectedFiles.Count > 0)
+        {
+            <div class="attachment-chips">
+                @foreach (var f in selectedFiles)
+                {
+                    <span class="attachment-chip" title="@f.Name">
+                        @f.Name
+                        <button type="button"
+                                class="attachment-remove"
+                                disabled="@Disabled"
+                                @onclick="() => RemoveFile(f)">
+                            ×
+                        </button>
+                    </span>
+                }
+            </div>
+        }
+
+        <div class="input-row">
+            <!-- Paperclip (opens hidden file input) -->
+            <button type="button"
+                    class="tool-button"
+                    title="Attach files"
+                    disabled="@Disabled"
+                    @onclick="OpenFilePicker">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="tool-icon" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.54 9.54a2 2 0 0 1-2.83-2.83l8.83-8.83" />
+                </svg>
+            </button>
+
+            <!-- Hidden real input -->
+            <InputFile @ref="fileInput"
+                       OnChange="OnFilesSelected"
+                       multiple
+                       disabled="@Disabled"
+                       style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;visibility:hidden;"
+                       class="file-input-hidden" />
+
+            <textarea @ref="@textArea"
+                      class="chat-textarea"
+                      @bind="@messageText"
+                      placeholder="Message…"
+                      rows="1"
+                      disabled="@Disabled"></textarea>
+
+            <!-- Send -->
+            <button type="submit"
+                    class="send-button"
+                    title="Send"
+                    disabled="@Disabled">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke-width="1.5" stroke="currentColor" class="tool-icon">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
+                </svg>
+            </button>
+        </div>
+    </div>
+</EditForm>
+
+@code {
+
+    public sealed record ChatSendRequest(ChatMessage Message, IReadOnlyList<IBrowserFile> Files);
+
+    [Parameter] public bool Disabled { get; set; }
+
+    private ElementReference textArea;
+    private InputFile? fileInput;
+
+    private string? messageText;
+    private readonly List<IBrowserFile> selectedFiles = new();
+
+    private bool isDragOver;
+
+    [Parameter] public EventCallback<ChatSendRequest> OnSend { get; set; }
+
+    public ValueTask FocusAsync()
+    {
+        if (Disabled) return ValueTask.CompletedTask;
+        return textArea.FocusAsync();
+    }
+
+    private void OnFilesSelected(InputFileChangeEventArgs e)
+    {
+        if (Disabled) return;
+
+        // ChatGPT-like: add to existing selection (not replace)
+        foreach (var f in e.GetMultipleFiles())
+        {
+            if (!selectedFiles.Any(x => x.Name == f.Name && x.Size == f.Size && x.LastModified == f.LastModified))
+                selectedFiles.Add(f);
+        }
+    }
+
+    private void RemoveFile(IBrowserFile f)
+    {
+        if (Disabled) return;
+        selectedFiles.Remove(f);
+    }
+
+    private Task OpenFilePicker()
+    {
+        if (Disabled) return Task.CompletedTask;
+        return JS.InvokeVoidAsync("chatInput.openFilePicker").AsTask();
+    }
+
+    private void OnDragEnter(DragEventArgs _)
+    {
+        if (Disabled) return;
+        isDragOver = true;
+    }
+
+    private void OnDragLeave(DragEventArgs _)
+    {
+        isDragOver = false;
+    }
+
+    private void OnDragOver(DragEventArgs _)
+    {
+        if (Disabled) return;
+        isDragOver = true;
+    }
+
+    private Task OnDrop(DragEventArgs _)
+    {
+        isDragOver = false;
+        return Task.CompletedTask;
+    }
+
+    private async Task SendMessageAsync()
+    {
+        if (Disabled)
+            return;
+
+        if (messageText is { Length: > 0 } || selectedFiles.Count > 0)
+        {
+            var textToSend = messageText ?? string.Empty;
+            messageText = null;
+
+            var msg = new ChatMessage(ChatRole.User, textToSend);
+
+            var files = selectedFiles.ToList();
+            selectedFiles.Clear();
+
+            await OnSend.InvokeAsync(new ChatSendRequest(msg, files));
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        try
+        {
+            var module = await JS.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/Chat/ChatInput.razor.js");
+            await module.InvokeVoidAsync("init", textArea);
+            await module.DisposeAsync();
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+    }
+
+}

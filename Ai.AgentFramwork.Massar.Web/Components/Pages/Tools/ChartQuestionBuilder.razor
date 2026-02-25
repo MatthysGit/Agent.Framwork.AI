@@ -1,0 +1,427 @@
+﻿@page "/settings/chart-questions"
+@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Ai.AgentFramwork.Massar.Web.Services.ChartQuestions
+@using Microsoft.EntityFrameworkCore
+@inject IChartQuestionTool Tool
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+
+<style>
+    .parent-container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
+        justify-content: center;
+        align-items: center;
+        width: 100%;
+    }
+
+    .chat-container {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-top: 12px;
+    }
+
+    .chat-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+    }
+
+    .chat-bubble {
+        flex: 1;
+        padding: 10px 12px;
+        border-radius: 14px;
+        border: 1px solid rgba(0,0,0,0.12);
+        background: rgba(0,0,0,0.03);
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+</style>
+
+<MudPaper Class="pa-4" Elevation="1" Rounded="true">
+    <MudStack Spacing="2">
+        <MudText Typo="Typo.h6">Chart Question Builder</MudText>
+
+        <MudText Typo="Typo.body2" Color="Color.Surface">
+            Uses your schema catalog (TableDefinition, TableFieldDefinition, TableReferencing) to generate
+            chat-style questions
+        </MudText>
+
+        <MudStack Direction="Row" Spacing="2" AlignItems="AlignItems.Center">
+
+            <div class="parent-container">
+                <MudSelect T="string"
+                           Label="Teams"
+                           Dense="true"
+                           Typo="Typo.caption"
+                           MultiSelection="true"
+                           SelectedValues="_selectedTeams"
+                           SelectedValuesChanged="OnSelectedTeamsChanged"
+                           Style="min-width: 320px;">
+                    @foreach (var t in _teams.Keys.OrderBy(x => x))
+                    {
+                        <MudSelectItem T="string" Value="@t">
+                            
+                            <MudText Typo="Typo.caption">@t</MudText>
+                        </MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudSelect T="string"
+                           Label="Roles"
+                           Dense="true"
+                           Typo="Typo.caption"
+                           MultiSelection="true"
+                           Disabled="@(!_selectedTeams.Any())"
+                           SelectedValues="_selectedTeamRoleKeys"
+                           SelectedValuesChanged="OnSelectedRolesChanged"
+                           Style="min-width: 420px;">
+                    @foreach (var opt in _availableRoleOptions)
+                    {
+                        <MudSelectItem T="string" Value="@opt.Key">
+                            
+                            <MudText Typo="Typo.caption">@opt.Display</MudText>
+                        </MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudSelect T="string"
+                           Label="Chart Types"
+                           MultiSelection="true"
+                           Typo="Typo.caption"
+                           SelectedValues="_selectedChartTypes"
+                           SelectedValuesChanged="OnSelectedChartTypesChanged"
+                           Dense="true"
+                           Style="min-width: 320px;">
+                    @foreach (var t in _allChartTypes)
+                    {
+                        <MudSelectItem T="string" Value="@t">
+                            <MudText>@t</MudText>
+                        </MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudNumericField T="int"
+                                 Label="Questions per type"
+                                 Dense="true"
+                                 Typo="Typo.caption"
+                                 Min="1"
+                                 Max="10"
+                                 @bind-Value="_questionsPerType"
+                                 Style="width: 180px;"/>
+
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           Disabled="@_running"
+                           Size="Size.Small"
+                           OnClick="RunAsync">
+                    Generate
+                </MudButton>
+
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Error"
+                           Size="Size.Small"
+                           Disabled="@(!_running)"
+                           OnClick="Cancel">
+                    Cancel
+                </MudButton>
+            </div>
+
+            @if (_running)
+            {
+                <MudChip T="string" Color="Color.Info" Variant="Variant.Filled">Running</MudChip>
+            }
+            else
+            {
+                <MudChip T="string" Color="Color.Default" Variant="Variant.Outlined">Idle</MudChip>
+            }
+        </MudStack>
+
+        @if (_running)
+        {
+            <!-- Progress is based on questions completed -->
+            <MudProgressLinear Value="@_pct.GetValueOrDefault()" Rounded="true"/>
+            <MudText Typo="Typo.caption">@_status (@_completedQuestions / @_expectedTotalQuestions)</MudText>
+        }
+
+        <MudDivider Class="my-2"/>
+
+        @if (_result is not null)
+        {
+            <MudText Typo="Typo.subtitle2">Generated Questions</MudText>
+
+            @foreach (var kv in _result.QuestionsByChartType.OrderBy(x => x.Key))
+            {
+                <MudPaper Class="pa-3 mb-2" Elevation="0" Outlined="true">
+                    <MudText Typo="Typo.subtitle2">@($"{kv.Key} ({kv.Value.Count})")</MudText>
+
+                    @if (kv.Value.Count == 0)
+                    {
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            No safe questions could be generated for this chart type.
+                        </MudText>
+                    }
+                    else
+                    {
+                        <div class="chat-container">
+                            @foreach (var q in kv.Value)
+                            {
+                                <div class="chat-row">
+                                    <div class="chat-bubble">@q</div>
+                                    <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
+                                                   Color="Color.Primary"
+                                                   Size="Size.Small"
+                                                   Title="Copy question"
+                                                   OnClick="@(async () => await CopyToClipboardAsync(q))"/>
+                                </div>
+                            }
+                        </div>
+                    }
+                </MudPaper>
+            }
+        }
+
+        <MudDivider Class="my-2"/>
+
+        <MudText Typo="Typo.subtitle2">Progress Log</MudText>
+        <MudPaper Class="pa-2" Style="max-height: 260px; overflow:auto;">
+        </MudPaper>
+    </MudStack>
+</MudPaper>
+
+@code {
+
+    // Loaded from DB (dbo.Team + dbo.TeamRole)
+    private Dictionary<string, IReadOnlyList<string>> _teams = new(StringComparer.OrdinalIgnoreCase);
+
+    private IReadOnlyCollection<string> _selectedTeams = new List<string>();
+
+    // Encoded as: "<Team>|<Role>" to keep role names unique across teams.
+    private IReadOnlyCollection<string> _selectedTeamRoleKeys = new List<string>();
+
+    private sealed record RoleOption(string Key, string Display);
+
+    private IReadOnlyList<RoleOption> _availableRoleOptions =>
+        _selectedTeams
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x)
+            .SelectMany(team =>
+                _teams.TryGetValue(team, out var roles)
+                    ? roles.Select(role => new RoleOption($"{team}|{role}", $"{role} ({team})"))
+                    : Array.Empty<RoleOption>())
+            .ToList();
+
+    private readonly string[] _allChartTypes = new[]
+    {
+        "Bar", "Column", "Line", "Area", "Donut", "Gauge", "Progress"
+    };
+
+    private IReadOnlyCollection<string> _selectedChartTypes = new List<string>
+    {
+        "Bar", "Column", "Line", "Donut"
+    };
+
+    private int _questionsPerType = 5;
+
+    private bool _running;
+
+    // Progress percent (0..100) derived from questions completed
+    private double? _pct;
+
+    private string _status = "";
+    private readonly List<string> _log = new();
+
+    private ChartQuestionResult? _result;
+    private CancellationTokenSource? _cts;
+
+    // Mutable streaming bucket (ChartQuestionResult exposes IReadOnlyDictionary/IReadOnlyList)
+    private readonly Dictionary<string, List<string>> _streamBucket = new(StringComparer.OrdinalIgnoreCase);
+
+    // Question-based progress tracking
+    private int _expectedTotalQuestions;
+    private int _completedQuestions;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadTeamsFromDbAsync();
+        await base.OnInitializedAsync();
+    }
+
+    private async Task LoadTeamsFromDbAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        // Pull active teams + active linked roles (Role.Name) using the new model:
+        // Team -> TeamRoles (link) -> Role (master)
+        var teams = await db.Teams
+            .AsNoTracking()
+            .Where(t => t.IsActive)
+            .OrderBy(t => t.Name)
+            .Select(t => new
+            {
+                t.Name,
+                Roles = t.TeamRoles
+                    .Where(tr => tr.IsActive && tr.Role.IsActive)
+                    .OrderBy(tr => tr.Role.Name)
+                    .Select(tr => tr.Role.Name)
+                    .ToList()
+            })
+            .ToListAsync();
+
+        _teams = teams.ToDictionary(
+            x => x.Name,
+            x => (IReadOnlyList<string>)x.Roles,
+            StringComparer.OrdinalIgnoreCase);
+
+        // If nothing selected (first load), choose a sensible default.
+        if (!_selectedTeams.Any())
+        {
+            var firstTeam = _teams.Keys.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(firstTeam))
+                _selectedTeams = new List<string> { firstTeam };
+        }
+
+        // Default role selection: keep existing if still valid; else pick first available
+        var allowed = new HashSet<string>(_availableRoleOptions.Select(o => o.Key), StringComparer.OrdinalIgnoreCase);
+
+        if (_selectedTeamRoleKeys.Any())
+            _selectedTeamRoleKeys = _selectedTeamRoleKeys.Where(k => allowed.Contains(k)).ToList();
+
+        if (_selectedTeams.Any() && !_selectedTeamRoleKeys.Any())
+        {
+            var first = _availableRoleOptions.FirstOrDefault();
+            if (first is not null)
+                _selectedTeamRoleKeys = new List<string> { first.Key };
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void OnSelectedChartTypesChanged(IEnumerable<string> values)
+    {
+        _selectedChartTypes = values?.ToList() ?? new List<string>();
+    }
+
+    private void OnSelectedTeamsChanged(IEnumerable<string> values)
+    {
+        _selectedTeams = values?.ToList() ?? new List<string>();
+
+        // Prune selected roles that no longer exist under selected teams.
+        var allowed = new HashSet<string>(_availableRoleOptions.Select(o => o.Key), StringComparer.OrdinalIgnoreCase);
+        _selectedTeamRoleKeys = _selectedTeamRoleKeys.Where(k => allowed.Contains(k)).ToList();
+
+        // If roles became empty but teams exist, default to first role of first team.
+        if (_selectedTeams.Any() && !_selectedTeamRoleKeys.Any())
+        {
+            var first = _availableRoleOptions.FirstOrDefault();
+            if (first is not null)
+                _selectedTeamRoleKeys = new List<string> { first.Key };
+        }
+    }
+
+    private void OnSelectedRolesChanged(IEnumerable<string> values)
+    {
+        _selectedTeamRoleKeys = values?.ToList() ?? new List<string>();
+    }
+
+    private async Task CopyToClipboardAsync(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+
+        Snackbar.Configuration.PositionClass = Defaults.Classes.Position.BottomCenter;
+        Snackbar.Add("Copied to clipboard", Severity.Success);
+    }
+
+    private async Task RunAsync()
+    {
+        if (_running) return;
+
+        _running = true;
+        _status = "Starting...";
+        _log.Clear();
+
+        _streamBucket.Clear();
+        _result = new ChartQuestionResult(
+            new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase));
+
+        var chartTypes = _selectedChartTypes.Any()
+            ? _selectedChartTypes.ToList()
+            : _allChartTypes.ToList();
+
+        _expectedTotalQuestions = Math.Max(1, chartTypes.Count * _questionsPerType * Math.Max(1, _selectedTeamRoleKeys.Count));
+        _completedQuestions = 0;
+        _pct = 0;
+
+        _cts = new CancellationTokenSource();
+
+        try
+        {
+            await foreach (var item in Tool.GenerateStreamAsync(
+                               chartTypes,
+                               _questionsPerType,
+                               _selectedTeamRoleKeys,
+                               _cts.Token))
+            {
+                _expectedTotalQuestions = item.Total;
+                _completedQuestions = item.Current;
+
+                _status = $"{item.Phase}: {item.Message}";
+                _pct = _expectedTotalQuestions > 0
+                    ? (double)_completedQuestions / _expectedTotalQuestions * 100.0
+                    : 0;
+
+                if (!string.IsNullOrWhiteSpace(item.Question))
+                {
+                    if (!_streamBucket.TryGetValue(item.ChartType, out var list))
+                    {
+                        list = new List<string>();
+                        _streamBucket[item.ChartType] = list;
+                    }
+
+                    list.Add(item.Question);
+
+                    var ro = _streamBucket.ToDictionary(
+                        kvp => kvp.Key,
+                        kvp => (IReadOnlyList<string>)kvp.Value,
+                        StringComparer.OrdinalIgnoreCase);
+
+                    _result = new ChartQuestionResult(ro);
+                }
+
+                _log.Insert(0, $"{DateTime.Now:HH:mm:ss} - {item.Phase}: {item.Message}");
+                await InvokeAsync(StateHasChanged);
+            }
+
+            _status = "Done.";
+            _pct = 100;
+            _log.Insert(0, $"{DateTime.Now:HH:mm:ss} - Done.");
+        }
+        catch (OperationCanceledException)
+        {
+            _log.Insert(0, $"{DateTime.Now:HH:mm:ss} - Canceled.");
+        }
+        catch (Exception ex)
+        {
+            _log.Insert(0, $"{DateTime.Now:HH:mm:ss} - Error: {ex.Message}");
+        }
+        finally
+        {
+            _running = false;
+            _cts?.Dispose();
+            _cts = null;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Cancel()
+    {
+        _cts?.Cancel();
+    }
+
+}

@@ -1,0 +1,32 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+     @* <link rel="stylesheet" href="@Assets["lib/bootstrap/dist/css/bootstrap.min.css"]" /> *@
+    <link rel="stylesheet" href="@Assets["variables.css"]" />
+    <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" rel="stylesheet" />
+    <link href="@Assets["_content/MudBlazor/MudBlazor.min.css"]" rel="stylesheet" />
+    <link rel="stylesheet" href="@Assets["app.css"]" />
+    <link rel="stylesheet" href="@Assets["Ai.AgentFramwork.Massar.Web.styles.css"]" />
+    <ImportMap />
+    <HeadOutlet @rendermode="@renderMode" />
+</head>
+
+<body>
+    <Routes @rendermode="@renderMode" />
+
+    <script src="@Assets["_content/MudBlazor/MudBlazor.min.js"]"></script>
+    <script src="/app.js" type="module"></script>
+
+    <!-- IMPORTANT: direct path -->
+    <script src="/_framework/blazor.web.js"></script>
+</body>
+
+</html>
+
+@code {
+    private readonly IComponentRenderMode renderMode = new InteractiveServerRenderMode(prerender: false);
+}

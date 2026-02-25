@@ -1,0 +1,95 @@
+﻿Example 1: 
+	- Count the Fleet by Fleet_Analysis_Type
+	- For the table you just returned, add a % of total column based on Count and include a grand total row.
+
+Example 2:
+	Count the Fleet by Fleet_Analysis_Type group by Revenue but also add:
+	1. Revenue subtotal row for each Revenue (NRG, RG)
+	2. Grand Total row
+	3. % of Total column where % is based on the grand total Count (not Revenue subtotal)
+	Output as a markdown table and order as: Revenue subtotal first, then its analysis types, then Grand Total.
+
+
+Example 3: Bar chart (DB)
+	Create a bar chart of Fleet count by Fleet_Analysis_Type using the database.
+
+Example 4: Bar chart (DB)
+	From the database, COUNT fleets grouped by Fleet_Analysis_Type (top 15 by count). Then generate a BAR chart image titled "Fleet Count by Fleet_Analysis_Type". X-axis: Fleet_Analysis_Type Y-axis: FleetCount Return only the image.
+
+
+Example 5:Column chart (DB) 
+	From the database, SUM(DEPREC_PER_MONTH) grouped by Fleet_Analysis_Type.
+	Then generate a COLUMN chart image titled "Depreciation by Fleet_Analysis_Type".
+	X-axis: Fleet_Analysis_Type
+	Y-axis: TotalDepreciation
+	Return only the image.
+
+3) Multi-series column chart (DB)
+	From the database, COUNT(*) of fleets grouped by:
+	- Fleet_Analysis_Type
+	- Car_Control_Status 
+	Then generate a MULTI-SERIES COLUMN chart image titled "Fleet Count by Type and Status Group".
+	X-axis: Fleet_Analysis_Type
+	Y-axis: FleetCount
+	Series: Car_Control_Status
+	Return only the image.
+
+4) Line chart (DB) --> Need data to test
+	From the database, produce a daily time series for the last 30 days:
+	COUNT(*) grouped by date using the best available date column in dbo.Fleet (e.g., CreatedUtc, UpdatedUtc, CreatedDate, or similar).
+	Then generate a LINE chart image titled "Daily Fleet Records (Last 30 Days)".
+	X-axis: Date
+	Y-axis: FleetCount
+	Return only the image.
+
+5) Multi-series line chart (DB) --> Need data to test
+	From the database, produce a daily time series for the last 30 days:
+	COUNT(*) grouped by date AND Fleet_Analysis_Type, limited to the top 3 Fleet_Analysis_Type values by total count.
+	Then generate a MULTI-SERIES LINE chart image titled "Daily Fleet Count by Top 3 Types (Last 30 Days)".
+	X-axis: Date
+	Y-axis: FleetCount
+	Series: Fleet_Analysis_Type (top 3)
+	Return only the image.
+
+6) Area chart (DB)	--> Need data to test
+	From the database, produce a daily time series for the last 30 days:
+	SUM(Revenue) grouped by date using the best available date column in dbo.Fleet.
+	Then generate an AREA chart image titled "Daily Revenue (Last 30 Days)".
+	X-axis: Date
+	Y-axis: Revenue
+	Return only the image.
+
+7) Multi-series area chart (DB) --> Need data to test
+	From the database, produce a monthly time series for the last 12 months:
+	SUM(Revenue) grouped by month AND Fleet_Analysis_Type, limited to the top 3 Fleet_Analysis_Type values by total revenue.
+	Then generate a MULTI-SERIES AREA chart image titled "Monthly Revenue by Top 3 Types (Last 12 Months)".
+	X-axis: Month
+	Y-axis: Revenue
+	Series: Fleet_Analysis_Type (top 3)
+	Return only the image.
+
+8) Pie chart (DB)
+	From the database, COUNT fleets grouped by Fleet_Analysis_Type
+	Then generate a PIE chart image titled "Fleet Share by Type".
+	Return only the image.
+
+9) Donut chart (DB)
+	From the database, COUNT fleets grouped by Fleet_Analysis_Type.
+	Then generate a DONUT chart titled "Fleet Distribution by Type".
+	
+
+10) Gauge chart (DB)
+	From the database, compute a single KPI value:
+	"Percent of fleets that are Lease" = (COUNT where Fleet_Analysis_Type='Lease' / COUNT total) * 100.
+	Then generate a GAUGE chart titled "Lease Share (%)" with Min=0 and Max=100.
+	
+
+11) Progress bars chart (DB)
+	From the database, compute these KPI percentages (0-100):
+	- LeaseShare = % of fleets with Fleet_Analysis_Type='Lease'
+	- RentalShare = % of fleets with Fleet_Analysis_Type='Rental_Agreement'
+	- AuctionShare = % of fleets with Fleet_Analysis_Type='Auction'
+	- NRGShare = % of fleets with Fleet_Analysis_Type='NRG'
+	- OtherShare = 100 - (LeaseShare+RentalShare+AuctionShare+NRGShare)
+	Then generate a PROGRESS BARS chart titled "Fleet Mix KPIs" with MaxValue=100.
+	Return only the image.

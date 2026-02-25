@@ -1,0 +1,189 @@
+﻿@page "/settings/roles"
+@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Ai.AgentFramwork.Massar.Web.Services.Teams
+@using MudBlazor
+
+@inject ITeamAdminService TeamService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<MudPaper Class="pa-2" Elevation="1" Rounded="true">
+    <MudStack Spacing="2">
+
+        <!-- Header -->
+        <MudStack Row="true" AlignItems="AlignItems.Center" JustifyContent="SpaceBetween">
+            <MudText Typo="Typo.subtitle1">Roles</MudText>
+
+            <MudButton Variant="Variant.Filled"
+                       Color="Color.Primary"
+                       Size="Size.Small"
+                       StartIcon="@Icons.Material.Filled.Add"
+                       OnClick="AddRoleAsync">
+                Add
+            </MudButton>
+        </MudStack>
+
+        <!-- Search -->
+        <MudTextField @bind-Value="_search"
+                      Placeholder="Search roles..."
+                      Adornment="Adornment.Start"
+                      AdornmentIcon="@Icons.Material.Filled.Search"
+                      Immediate="true"
+                      style="max-width: 300px;"
+                      Margin="Margin.Dense"
+                      Variant="Variant.Outlined" />
+
+        <MudDivider />
+
+        <!-- DataGrid -->
+        <MudDataGrid T="Role"
+                     Items="_filteredRoles"
+                     Dense="true"
+                     Hover="true"
+                     Elevation="0">
+
+            <Columns>
+
+                <PropertyColumn T="Role" TProperty="string"
+                                Property="x => x.Name"
+                                Title="Role" />
+
+                <TemplateColumn T="Role" Title="Active" Style="width:100px;">
+                    <CellTemplate Context="ctx">
+                        <MudSwitch T="bool"
+                                   Size="Size.Small"
+                                   Dense="true"
+                                   Value="ctx.Item.IsActive"
+                                   ValueChanged="async v => await ToggleRoleActiveAsync(ctx.Item.RoleId, v)"
+                                   Color="Color.Success" />
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn T="Role" Title="Created" Style="width:120px;">
+                    <CellTemplate Context="ctx">
+                        @ctx.Item.CreatedOn.ToString("yyyy-MM-dd")
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn T="Role" Title="Actions" Align="Align.End" Style="width:140px;">
+                    <CellTemplate Context="ctx">
+                        <MudStack Row="true" Spacing="1" JustifyContent="FlexEnd">
+                            <MudIconButton Icon="@Icons.Material.Filled.Edit"
+                                           Size="Size.Small"
+                                           Color="Color.Primary"
+                                           OnClick="() => EditRoleAsync(ctx.Item.RoleId)" />
+
+                            <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                           Size="Size.Small"
+                                           Color="Color.Error"
+                                           OnClick="() => DeleteRoleAsync(ctx.Item.RoleId, ctx.Item.Name)" />
+                        </MudStack>
+                    </CellTemplate>
+                </TemplateColumn>
+
+            </Columns>
+        </MudDataGrid>
+
+        @if (!_filteredRoles.Any())
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                No roles match your search.
+            </MudText>
+        }
+
+    </MudStack>
+</MudPaper>
+
+@code {
+    private List<Role> _roles = new();
+    private string _search = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _roles = (await TeamService.GetRolesAsync()).ToList();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private IEnumerable<Role> _filteredRoles =>
+        string.IsNullOrWhiteSpace(_search)
+            ? _roles
+            : _roles.Where(r =>
+                (r.Name ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase)
+                || r.CreatedOn.ToString("yyyy-MM-dd")
+                     .Contains(_search, StringComparison.OrdinalIgnoreCase)
+                || (r.IsActive ? "active" : "inactive")
+                     .Contains(_search, StringComparison.OrdinalIgnoreCase)
+            );
+
+    private async Task AddRoleAsync()
+    {
+        var dlg = await DialogService.ShowAsync<RoleEditDialog>(
+            "Add Role",
+            new DialogParameters { ["RoleId"] = null },
+            new DialogOptions { CloseButton = true, FullWidth = true, MaxWidth = MaxWidth.Small });
+
+        if (!(await dlg.Result)?.Canceled ?? false)
+            await ReloadAsync();
+    }
+
+    private async Task EditRoleAsync(int roleId)
+    {
+        var dlg = await DialogService.ShowAsync<RoleEditDialog>(
+            "Edit Role",
+            new DialogParameters { ["RoleId"] = roleId },
+            new DialogOptions { CloseButton = true, FullWidth = true, MaxWidth = MaxWidth.Small });
+
+        if (!(await dlg.Result)?.Canceled ?? false)
+            await ReloadAsync();
+    }
+
+    private async Task ToggleRoleActiveAsync(int roleId, bool isActive)
+    {
+        try
+        {
+            var role = await TeamService.GetRoleAsync(roleId);
+            if (role is null) return;
+
+            await TeamService.UpdateRoleAsync(roleId, role.Name, isActive);
+            Snackbar.Add("Role updated.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.GetBaseException().Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadAsync();
+        }
+    }
+
+    private async Task DeleteRoleAsync(int roleId, string? roleName)
+    {
+        var confirm = await DialogService.ShowMessageBoxAsync(
+            "Delete Role",
+            (MarkupString)$"Delete role <b>{roleName ?? "this role"}</b>?",
+            "Delete",
+            cancelText: "Cancel");
+
+        if (confirm != true) return;
+
+        try
+        {
+            await TeamService.DeleteRoleAsync(roleId);
+            Snackbar.Add("Role deleted.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.GetBaseException().Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadAsync();
+        }
+    }
+}

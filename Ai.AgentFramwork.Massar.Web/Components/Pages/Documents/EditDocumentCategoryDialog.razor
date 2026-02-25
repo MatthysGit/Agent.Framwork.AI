@@ -1,0 +1,47 @@
+﻿@using Ai.AgentFramwork.Massar.Web.DBModels
+@using MudBlazor
+
+<CascadingValue Value="this">
+    <MudDialog>
+        <DialogContent>
+            <MudStack Spacing="2">
+                <MudText Typo="Typo.body2">
+                    Select a category for this document.
+                </MudText>
+
+                <MudSelect T="int?" Label="Category" Dense="true" Variant="Variant.Outlined" @bind-Value="_selectedCategoryId">
+                    <MudSelectItem Value="@((int?)null)">None</MudSelectItem>
+                    @foreach (var c in Categories.OrderBy(c => c.Name))
+                    {
+                        <MudSelectItem Value="@((int?)c.DocumentCategoryId)">@c.Name</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudStack>
+        </DialogContent>
+
+        <DialogActions>
+            <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Save">Save</MudButton>
+        </DialogActions>
+    </MudDialog>
+</CascadingValue>
+
+@code {
+    [CascadingParameter]
+    public IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public Guid DocumentId { get; set; }
+    [Parameter] public int? CurrentCategoryId { get; set; }
+    [Parameter] public List<DocumentCategory> Categories { get; set; } = new();
+
+    private int? _selectedCategoryId;
+
+    protected override void OnInitialized()
+    {
+        _selectedCategoryId = CurrentCategoryId;
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void Save() => MudDialog.Close(DialogResult.Ok(_selectedCategoryId));
+}

@@ -1,0 +1,101 @@
+.doc-source-table .mud-table-row {
+    height: 20px !important;
+}
+
+.doc-source-table .mud-table-cell {
+    padding-top: 1px;
+    padding-bottom: 1px;
+    height: 20px !important;
+}
+
+.nav-link {
+    text-align: center;
+    font-size: smaller;
+}
+
+.mud-nav-link-active {
+    background-color: #1976d2 !important;
+    color: black !important;
+    border-radius: 6px;
+}
+
+.nav-link.active {
+    background-color: transparent;
+    border-left: 4px solid #1976d2;
+    font-weight: 600;
+}
+
+
+.mud-table-root .mud-table-body .mud-table-cell {
+    font-size: 12px;
+}
+
+.mud-typography-body1 {
+    font-size: 12px;
+}
+
+.mud-expand-panel-text {
+    font-size: smaller;
+}
+/*
+.side-nav-link.mud-nav-link-active {
+    background: linear-gradient(90deg, #7B2FF7, #9B4DFF);
+    color: white !important;
+    border-radius: 6px;
+}
+*/
+
+
+/*.side-nav-link.mud-nav-link-active {
+    background-color: #D0D0FF !important;*/ /* Your selected color */
+    /*color: #000000 !important;*/ /* Optional text color */
+    /*border-radius: 6px;
+}*/
+
+.side-nav-link:active {
+    background: linear-gradient(90deg, #7B2FF7, #9B4DFF);
+    color: white !important;
+    border-radius: 6px;
+}
+
+
+.side-nav-link:hover {
+    background-color: #ECECFF;
+    
+}
+
+
+
+/*.side-nav-link.mud-nav-link-active {
+    background-color: #D0D0FF !important;*/ /* Your selected color */
+    /*color: #000000 !important;*/ /* Optional text color */
+    /*border-radius: 6px;
+}*/
+
+/*.side-nav-link.mud-nav-link-active {
+    background: linear-gradient(90deg, #7B2FF7, #9B4DFF);
+    color: white !important;
+    border-radius: 6px;
+}*/
+
+
+textarea {
+    font-size:smaller;
+}
+
+.mud-theme-secondary {
+    color: black !important;
+    background-color: var(--purple) !important;
+}
+
+.actions-cell {
+    background-color: white !important;
+}
+
+    .actions-cell:hover {
+        background-color: white !important;
+    }
+
+.mud-expand-panel.mud-expand-panel-border {
+    border-bottom: 0px solid var(--mud-palette-lines-default);
+}

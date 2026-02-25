@@ -1,0 +1,35 @@
+dotnet ef dbcontext scaffold "Server=IT-MANAGER\\SQLEXPRESS,14330;Initial Catalog=AI.BIZZ;User ID=sa;Password=Sunshine1;Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True;Connection Timeout=30;" Microsoft.EntityFrameworkCore.SqlServer \
+--output-dir DBModels \
+--context AppDbContext \
+--use-database-names \
+--no-onconfiguring \
+--force \
+--table ChatConversations \
+--table UserTeamRoles \
+--table ChatMessages \
+--table Documents \
+--table UserSecurityGroups \
+--table DocumentChunks \
+--table SecurityMenuItem \
+--table TableDefinitionHistory \
+--table DocumentMetadata \
+--table SecurityGroupMenuItem \
+--table TableDefinition \
+--table ChatMessageAttachment \
+--table TableFieldDefinitionHistory \
+--table DocumentFiles \
+--table TableFieldDefinition \
+--table DocumentCategory \
+--table DocumentCategoryMap \
+--table DocumentRoleAccess \
+--table TableReferencingHistory \
+--table TableReferencing \
+--table DocumentRoleAccessHistory \
+--table SecurityGroups \
+--table ChatAttachmentContent \
+--table AppUsers \
+--table TableFieldDefinitionRoleAccess \
+--table Team \
+--table TeamRole \
+--table TableFieldDefinitionRoleAccessHistory \
+--table Role

@@ -1,0 +1,388 @@
+﻿@page "/settings/teamss"
+@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Ai.AgentFramwork.Massar.Web.Services.Teams
+@using MudBlazor
+
+@inject ITeamAdminService TeamService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<MudPaper Class="pa-2" Elevation="1" Rounded="true">
+    <MudStack Spacing="1">
+
+        <MudStack Row="true" AlignItems="AlignItems.Center" JustifyContent="SpaceBetween">
+            <MudText Typo="Typo.subtitle1">Teams & Roles</MudText>
+        </MudStack>
+
+        <MudDivider />
+
+        <MudGrid Spacing="1">
+            <!-- LEFT: TEAMS -->
+            <MudItem xs="12" md="5">
+                <MudPaper Class="pa-2" Elevation="0" Outlined="true">
+                    <MudStack Spacing="1">
+
+                        <MudStack Row="true" AlignItems="AlignItems.Center" JustifyContent="SpaceBetween">
+                            <MudText Typo="Typo.body1">Teams</MudText>
+
+                            <MudButton Variant="Variant.Filled"
+                                       Color="Color.Primary"
+                                       Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.Add"
+                                       OnClick="AddTeamAsync">
+                                Add
+                            </MudButton>
+                        </MudStack>
+
+                        <!-- ✅ Teams Grid -->
+                        <MudDataGrid T="Team"
+                                     Items="_teams"
+                                     Dense="true"
+                                     Hover="true"
+                                     Elevation="0">
+
+                            <Columns>
+                                <!-- Team (clickable to select) -->
+                                <TemplateColumn T="Team" Title="Team">
+                                    <CellTemplate Context="ctx">
+                                        <MudText Typo="Typo.body2"
+                                                 Style="cursor:pointer;"
+                                                 Color="@(ctx.Item.TeamId == _selectedTeamId ? Color.Primary : Color.Inherit)"
+                                                 @onclick="async () => await SelectTeamAsync(ctx.Item)">
+                                            @ctx.Item.Name
+                                        </MudText>
+                                    </CellTemplate>
+                                </TemplateColumn>
+
+                                <!-- Active -->
+                                <TemplateColumn T="Team" Title="Active" Style="width:72px;">
+                                    <CellTemplate Context="ctx">
+                                        <MudSwitch T="bool"
+                                                   Dense="true"
+                                                   Size="Size.Small"
+                                                   Value="ctx.Item.IsActive"
+                                                   ValueChanged="async v => await ToggleTeamActiveAsync(ctx.Item.TeamId, v)"
+                                                   Color="Color.Success" />
+                                    </CellTemplate>
+                                </TemplateColumn>
+
+                                <!-- Created -->
+@*                                 <TemplateColumn T="Team" Title="Created" Style="width:104px;">
+                                    <CellTemplate Context="ctx">
+                                        <MudText Typo="Typo.body2">
+                                            @ctx.Item.CreatedOn.ToString("yyyy-MM-dd")
+                                        </MudText>
+                                    </CellTemplate>
+                                </TemplateColumn> *@
+
+                                <!-- Actions -->
+                                <TemplateColumn T="Team" Title="Actions" Align="Align.End" Style="width:96px;">
+                                    <CellTemplate Context="ctx">
+                                        <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" JustifyContent="FlexEnd">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit"
+                                                           Size="Size.Small"
+                                                           Color="Color.Primary"
+                                                           OnClick="() => EditTeamAsync(ctx.Item.TeamId)" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                                           Size="Size.Small"
+                                                           Color="Color.Error"
+                                                           OnClick="() => DeleteTeamAsync(ctx.Item.TeamId)" />
+                                        </MudStack>
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                        </MudDataGrid>
+
+                        @if (_teams.Count == 0)
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                No teams found. Click “Add” to create your first team.
+                            </MudText>
+                        }
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+
+            <!-- RIGHT: ROLES (links for selected team) -->
+            <MudItem xs="12" md="7">
+                <MudPaper Class="pa-2" Elevation="0" Outlined="true">
+                    <MudStack Spacing="1">
+
+                        <MudStack Row="true" AlignItems="AlignItems.Center" JustifyContent="SpaceBetween">
+                            <MudStack Spacing="0">
+                                <MudText Typo="Typo.body1">Roles</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                    @(_selectedTeamId is null
+                                                                        ? "Select a team on the left to view its roles."
+                                                                        : $"Team: {_selectedTeamName}")
+                                </MudText>
+                            </MudStack>
+
+                            <MudButton Variant="Variant.Filled"
+                                       Color="Color.Primary"
+                                       Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.Add"
+                                       Disabled="@(_selectedTeamId is null)"
+                                       OnClick="AddRoleForSelectedTeamAsync">
+                                Add
+                            </MudButton>
+                        </MudStack>
+
+                        <!-- ✅ Roles Grid -->
+                        <MudDataGrid T="TeamRole"
+                                     Items="_filteredTeamRoles"
+                                     Dense="true"
+                                     Hover="true"
+                                     Elevation="0">
+
+                            <Columns>
+                                <!-- Role -->
+                                <TemplateColumn T="TeamRole" Title="Role">
+                                    <CellTemplate Context="ctx">
+                                        <MudText Typo="Typo.body2">
+                                            @ctx.Item.Role?.Name
+                                        </MudText>
+                                    </CellTemplate>
+                                </TemplateColumn>
+
+                                <!-- Active -->
+                                <TemplateColumn T="TeamRole" Title="Active" Style="width:72px;">
+                                    <CellTemplate Context="ctx">
+                                        <MudSwitch T="bool"
+                                                   Dense="true"
+                                                   Size="Size.Small"
+                                                   Value="ctx.Item.IsActive"
+                                                   Color="Color.Success"
+                                                   ValueChanged="async v => await ToggleTeamRoleActiveAsync(ctx.Item.TeamRoleId, v)" />
+                                    </CellTemplate>
+                                </TemplateColumn>
+
+                                <!-- Created -->
+     @*                            <TemplateColumn T="TeamRole" Title="Created" Style="width:104px;">
+                                    <CellTemplate Context="ctx">
+                                        <MudText Typo="Typo.body2">
+                                            @ctx.Item.CreatedOn.ToString("yyyy-MM-dd")
+                                        </MudText>
+                                    </CellTemplate>
+                                </TemplateColumn> *@
+
+                                <!-- Actions -->
+                                <TemplateColumn T="TeamRole" Title="Actions" Align="Align.End" Style="width:96px;">
+                                    <CellTemplate Context="ctx">
+                                        <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" JustifyContent="FlexEnd">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                                           Size="Size.Small"
+                                                           Color="Color.Error"
+                                                           OnClick="() => RemoveRoleFromTeamAsync(ctx.Item.TeamRoleId)" />
+                                        </MudStack>
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                        </MudDataGrid>
+
+                        @if (_selectedTeamId is not null && _filteredTeamRoles.Count == 0)
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                No roles for this team. Click “Add”.
+                            </MudText>
+                        }
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    </MudStack>
+</MudPaper>
+
+@code {
+    private List<Team> _teams = new();
+    private int? _selectedTeamId;
+    private string _selectedTeamName = string.Empty;
+    private List<TeamRole> _teamRoles = new();
+    private List<TeamRole> _filteredTeamRoles = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadTeamsAsync();
+
+        if (_teams.Count > 0)
+            await SelectTeamAsync(_teams[0]);
+    }
+
+    private async Task ReloadTeamsAsync()
+    {
+        _teams = (await TeamService.GetTeamsAsync()).ToList();
+    }
+
+    private async Task SelectTeamAsync(Team team)
+    {
+        _selectedTeamId = team.TeamId;
+        _selectedTeamName = team.Name ?? string.Empty;
+
+        await ReloadTeamRolesAsync();
+    }
+
+    private async Task SelectTeam(Team team)
+    {
+        await SelectTeamAsync(team);
+    }
+
+    private async Task ReloadTeamRolesAsync()
+    {
+        if (_selectedTeamId is null)
+        {
+            _filteredTeamRoles = new List<TeamRole>();
+            return;
+        }
+
+        _filteredTeamRoles = (await TeamService.GetTeamRolesForTeamAsync(_selectedTeamId.Value)).ToList();
+    }
+
+    #region Teams CRUD
+
+    private async Task AddTeamAsync()
+    {
+        var opts = new DialogOptions { CloseButton = true, FullWidth = true, MaxWidth = MaxWidth.Small };
+
+        var dlg = await DialogService.ShowAsync<TeamEditDialog>(
+            "Add Team",
+            new DialogParameters(),
+            opts);
+
+        var result = await dlg.Result;
+        if (result?.Canceled != false) return;
+
+        await ReloadTeamsAsync();
+    }
+
+    private async Task EditTeamAsync(int teamId)
+    {
+        var opts = new DialogOptions { CloseButton = true, FullWidth = true, MaxWidth = MaxWidth.Small };
+        var parms = new DialogParameters { ["TeamId"] = teamId };
+
+        var dlg = await DialogService.ShowAsync<TeamEditDialog>(
+            "Edit Team",
+            parms,
+            opts);
+
+        var result = await dlg.Result;
+        if (result?.Canceled != false) return;
+
+        await ReloadTeamsAsync();
+    }
+
+    private async Task ToggleTeamActiveAsync(int teamId, bool isActive)
+    {
+        try
+        {
+            await TeamService.SetTeamActiveAsync(teamId, isActive);
+            Snackbar.Add("Team updated.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.GetBaseException().Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadTeamsAsync();
+        }
+    }
+
+    private async Task DeleteTeamAsync(int teamId)
+    {
+        var confirm = await DialogService.ShowMessageBoxAsync(
+            "Delete Team",
+            (MarkupString)"This will delete the team and its role links. Continue?",
+            "Delete",
+            cancelText: "Cancel");
+
+        if (confirm != true) return;
+
+        try
+        {
+            await TeamService.DeleteTeamAsync(teamId);
+            Snackbar.Add("Team deleted.", Severity.Success);
+
+            if (_selectedTeamId == teamId)
+            {
+                _selectedTeamId = null;
+                _selectedTeamName = string.Empty;
+                _teamRoles = new List<TeamRole>();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.GetBaseException().Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadTeamsAsync();
+        }
+    }
+
+    #endregion
+
+    #region TeamRoles CRUD (links)
+
+    private async Task AddRoleForSelectedTeamAsync()
+    {
+        if (_selectedTeamId is null) return;
+
+        var opts = new DialogOptions { CloseButton = true, FullWidth = true, MaxWidth = MaxWidth.Small };
+        var parms = new DialogParameters { ["TeamId"] = _selectedTeamId.Value };
+
+        var dlg = await DialogService.ShowAsync<AddRoleToTeamDialog>(
+            "Add Role",
+            parms,
+            opts);
+
+        var result = await dlg.Result;
+        if (result?.Canceled != false) return;
+
+        await ReloadTeamRolesAsync();
+    }
+
+    private async Task ToggleTeamRoleActiveAsync(int teamRoleId, bool isActive)
+    {
+        try
+        {
+            await TeamService.SetTeamRoleActiveAsync(teamRoleId, isActive);
+            Snackbar.Add("Role link updated.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.GetBaseException().Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadTeamRolesAsync();
+        }
+    }
+
+    private async Task RemoveRoleFromTeamAsync(int teamRoleId)
+    {
+        var confirm = await DialogService.ShowMessageBoxAsync(
+            "Remove Role",
+            (MarkupString)"Remove this role from the team?",
+            "Remove",
+            cancelText: "Cancel");
+
+        if (confirm != true) return;
+
+        try
+        {
+            await TeamService.RemoveRoleFromTeamAsync(teamRoleId);
+            Snackbar.Add("Role removed from team.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.GetBaseException().Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadTeamRolesAsync();
+        }
+    }
+
+    #endregion
+
+}

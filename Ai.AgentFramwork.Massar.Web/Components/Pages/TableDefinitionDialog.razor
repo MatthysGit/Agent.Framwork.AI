@@ -1,0 +1,58 @@
+﻿@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudForm @ref="_form">
+            <MudTextField Label="Name (PK)" @bind-Value="Model.Name" Required="true" Disabled="IsEdit"/>
+            <MudTextField Label="Definition" @bind-Value="Model.Definition" Lines="4"/>
+        </MudForm>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Save">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public TableDefinition Model { get; set; } = default!;
+    [Parameter] public bool IsEdit { get; set; }
+
+    private MudForm? _form;
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+
+    private async Task Save()
+    {
+        if (_form is null) return;
+        await _form.Validate();
+        if (!_form.IsValid) return;
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+
+            if (!IsEdit)
+                db.TableDefinitions.Add(Model);
+            else
+                db.TableDefinitions.Update(Model);
+
+            await db.SaveChangesAsync();
+            Snackbar.Add("Saved.", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Save failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+}

@@ -1,0 +1,129 @@
+﻿@using Ai.AgentFramwork.Massar.Web.Services.Teams
+@inject ITeamAdminService TeamService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.subtitle1">@(_isEdit ? "Edit Role" : "Add Role")</MudText>
+
+            @if (_teamName is not null)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    Team: @_teamName
+                </MudText>
+            }
+
+            <MudTextField @bind-Value="_roleName"
+                          Label="Role Name"
+                          Required="true"
+                          Immediate="true"
+                          MaxLength="200"/>
+
+            <MudSwitch T="bool" @bind-Checked="_isActive" Color="Color.Success">
+                Active
+            </MudSwitch>
+        </MudStack>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveAsync" Disabled="@_saving">
+            Save
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+
+    // Add
+    [Parameter] public int? TeamId { get; set; }
+
+    // Edit
+    [Parameter] public int? TeamRoleId { get; set; }
+
+    private bool _isEdit => TeamRoleId.HasValue;
+    private bool _saving;
+
+    private string _roleName = string.Empty;
+    private bool _isActive = true;
+
+    private int _resolvedTeamId;
+    private string? _teamName;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (_isEdit)
+        {
+            // In the new design, TeamRoleId refers to the LINK record (TeamRole),
+            // not the master Role.
+            var link = await TeamService.GetTeamRoleAsync(TeamRoleId!.Value);
+            if (link is null)
+            {
+                Snackbar.Add("Role link not found.", Severity.Error);
+                MudDialog.Cancel();
+                return;
+            }
+
+            _resolvedTeamId = link.TeamId;
+            _roleName = link.Role?.Name ?? string.Empty; // <-- Role.Name (not RoleName)
+            _isActive = link.IsActive;
+
+            var team = await TeamService.GetTeamAsync(_resolvedTeamId);
+            _teamName = team?.Name;
+        }
+        else
+        {
+            if (!TeamId.HasValue)
+            {
+                Snackbar.Add("TeamId is required to add a role.", Severity.Error);
+                MudDialog.Cancel();
+                return;
+            }
+
+            _resolvedTeamId = TeamId.Value;
+            var team = await TeamService.GetTeamAsync(_resolvedTeamId);
+            _teamName = team?.Name;
+        }
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+
+    private async Task SaveAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_roleName))
+        {
+            Snackbar.Add("Role name is required.", Severity.Warning);
+            return;
+        }
+
+        _saving = true;
+
+        try
+        {
+            if (!_isEdit)
+            {
+                await TeamService.AddRoleToTeamByNameAsync(_resolvedTeamId, _roleName);
+            }
+            else
+            {
+                await TeamService.SetTeamRoleActiveAsync(TeamRoleId!.Value, _isActive);
+            }
+
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Save failed: {ex.GetBaseException().Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+}
