@@ -64,6 +64,7 @@ public class DocumentTextExtractor : IDocumentTextExtractor
         return doc.MainDocumentPart?.Document?.Body?.InnerText ?? "";
     }
 
+
     private string ExtractXlsx(byte[] bytes)
     {
         using var ms = new MemoryStream(bytes);
@@ -91,10 +92,39 @@ public class DocumentTextExtractor : IDocumentTextExtractor
             if (cell.DataType?.Value == CellValues.InlineString)
                 return cell.InnerText ?? "";
 
+            // NOTE: This returns the raw stored value (dates are numbers unless styles are applied).
+            // For search purposes, that's usually OK. If you want formatted dates, you need style parsing.
             return value;
         }
 
-        var sb = new StringBuilder();
+        static int ColumnNameToNumber(string columnName)
+        {
+            // A -> 1, B -> 2, Z -> 26, AA -> 27 ...
+            int sum = 0;
+            foreach (var ch in columnName)
+            {
+                if (ch < 'A' || ch > 'Z') break;
+                sum = (sum * 26) + (ch - 'A' + 1);
+            }
+            return sum;
+        }
+
+        static int GetColumnIndexFromCellRef(string? cellRef)
+        {
+            if (string.IsNullOrWhiteSpace(cellRef))
+                return -1;
+
+            // Extract letters from "C12" => "C", "AA4" => "AA"
+            var letters = new string(cellRef
+                .TakeWhile(char.IsLetter)
+                .Select(ch => char.ToUpperInvariant(ch))
+                .ToArray());
+
+            if (letters.Length == 0) return -1;
+            return ColumnNameToNumber(letters) - 1; // zero-based
+        }
+
+        var sb = new StringBuilder(64 * 1024);
 
         foreach (var sheet in wbPart.Workbook.Sheets?.Elements<Sheet>() ?? Enumerable.Empty<Sheet>())
         {
@@ -102,7 +132,7 @@ public class DocumentTextExtractor : IDocumentTextExtractor
             var ws = wsPart?.Worksheet;
             if (ws == null) continue;
 
-            sb.AppendLine($"# Sheet: {sheet.Name}");
+            sb.AppendLine($"=== Sheet: {sheet.Name} ===");
 
             var sheetData = ws.GetFirstChild<SheetData>();
             if (sheetData == null)
@@ -111,23 +141,120 @@ public class DocumentTextExtractor : IDocumentTextExtractor
                 continue;
             }
 
+            // Build a dense grid per row (preserve column gaps)
+            List<string[]> denseRows = new();
+            int maxCols = 0;
+
             foreach (var row in sheetData.Elements<Row>())
             {
-                var values = row.Elements<Cell>()
-                    .Select(GetCellText)
-                    .Select(v => (v ?? "").Trim())
-                    .ToArray();
+                // Map cells by column index
+                var map = new SortedDictionary<int, string>(Comparer<int>.Default);
+                foreach (var cell in row.Elements<Cell>())
+                {
+                    var col = GetColumnIndexFromCellRef(cell.CellReference?.Value);
+                    if (col < 0) continue;
+                    map[col] = (GetCellText(cell) ?? "").Trim();
+                }
 
-                if (values.Length == 0 || values.All(string.IsNullOrWhiteSpace))
+                if (map.Count == 0)
                     continue;
 
-                sb.AppendLine(string.Join("\t", values));
+                maxCols = Math.Max(maxCols, map.Keys.Max() + 1);
+
+                // We'll densify later once we know maxCols
+                // For now, store sparse as temp: densify with maxCols
+                denseRows.Add(new string[] { "__SPARSE__" }); // placeholder marker
+                denseRows[^1] = BuildDense(map, maxCols);     // densify with current maxCols
+            }
+
+            // If maxCols grew later, re-densify earlier rows
+            // (simple approach: re-scan once more)
+            if (maxCols == 0 || denseRows.Count == 0)
+            {
+                sb.AppendLine();
+                continue;
+            }
+
+            // Rebuild rows with final maxCols to ensure alignment
+            denseRows.Clear();
+            foreach (var row in sheetData.Elements<Row>())
+            {
+                var map = new SortedDictionary<int, string>(Comparer<int>.Default);
+                foreach (var cell in row.Elements<Cell>())
+                {
+                    var col = GetColumnIndexFromCellRef(cell.CellReference?.Value);
+                    if (col < 0) continue;
+                    map[col] = (GetCellText(cell) ?? "").Trim();
+                }
+                if (map.Count == 0) continue;
+                denseRows.Add(BuildDense(map, maxCols));
+            }
+
+            // Find header row (first non-empty row)
+            int headerRowIndex = -1;
+            for (int i = 0; i < denseRows.Count; i++)
+            {
+                if (denseRows[i].Any(v => !string.IsNullOrWhiteSpace(v)))
+                {
+                    headerRowIndex = i;
+                    break;
+                }
+            }
+
+            if (headerRowIndex < 0)
+            {
+                sb.AppendLine();
+                continue;
+            }
+
+            var headers = denseRows[headerRowIndex]
+                .Select((h, idx) => string.IsNullOrWhiteSpace(h) ? $"Column{idx + 1}" : h.Trim())
+                .ToArray();
+
+            // Emit rows below header as key/value records
+            for (int i = headerRowIndex + 1; i < denseRows.Count; i++)
+            {
+                var rowVals = denseRows[i];
+                if (rowVals.All(string.IsNullOrWhiteSpace))
+                    continue;
+
+                sb.Append("Row ");
+                sb.Append(i + 1); // 1-based within extracted rows (not Excel row number, but stable)
+                sb.Append(": ");
+
+                bool any = false;
+                for (int c = 0; c < headers.Length; c++)
+                {
+                    var v = c < rowVals.Length ? rowVals[c]?.Trim() : "";
+                    if (!string.IsNullOrWhiteSpace(v)) any = true;
+
+                    sb.Append(headers[c]);
+                    sb.Append(": ");
+                    sb.Append(string.IsNullOrWhiteSpace(v) ? "∅" : v);
+                    sb.Append(" | ");
+                }
+
+                if (any)
+                    sb.AppendLine();
             }
 
             sb.AppendLine();
         }
 
         return sb.ToString();
+
+        static string[] BuildDense(SortedDictionary<int, string> map, int maxCols)
+        {
+            var arr = new string[maxCols];
+            foreach (var kvp in map)
+            {
+                if (kvp.Key >= 0 && kvp.Key < maxCols)
+                    arr[kvp.Key] = kvp.Value ?? "";
+            }
+            for (int i = 0; i < arr.Length; i++)
+                arr[i] ??= "";
+            return arr;
+        }
     }
 
     private string ExtractXls(byte[] bytes)
@@ -136,22 +263,50 @@ public class DocumentTextExtractor : IDocumentTextExtractor
         using var reader = ExcelReaderFactory.CreateReader(ms);
         var ds = reader.AsDataSet();
 
-        var sb = new StringBuilder();
+        var sb = new StringBuilder(64 * 1024);
 
         foreach (DataTable table in ds.Tables)
         {
-            sb.AppendLine($"# Sheet: {table.TableName}");
+            sb.AppendLine($"=== Sheet: {table.TableName} ===");
 
-            foreach (DataRow row in table.Rows)
+            if (table.Rows.Count == 0 || table.Columns.Count == 0)
             {
-                var values = row.ItemArray
-                    .Select(v => v?.ToString()?.Trim() ?? "")
-                    .ToArray();
+                sb.AppendLine();
+                continue;
+            }
 
+            // Header row = first row
+            var headers = Enumerable.Range(0, table.Columns.Count)
+                .Select(i =>
+                {
+                    var h = table.Rows[0][i]?.ToString()?.Trim();
+                    return string.IsNullOrWhiteSpace(h) ? $"Column{i + 1}" : h!;
+                })
+                .ToArray();
+
+            for (int r = 1; r < table.Rows.Count; r++)
+            {
+                var row = table.Rows[r];
+                var values = row.ItemArray.Select(v => v?.ToString()?.Trim() ?? "").ToArray();
                 if (values.All(string.IsNullOrWhiteSpace))
                     continue;
 
-                sb.AppendLine(string.Join("\t", values));
+                sb.Append($"Row {r + 1}: ");
+
+                bool any = false;
+                for (int c = 0; c < headers.Length; c++)
+                {
+                    var v = c < values.Length ? values[c] : "";
+                    if (!string.IsNullOrWhiteSpace(v)) any = true;
+
+                    sb.Append(headers[c]);
+                    sb.Append(": ");
+                    sb.Append(string.IsNullOrWhiteSpace(v) ? "∅" : v);
+                    sb.Append(" | ");
+                }
+
+                if (any)
+                    sb.AppendLine();
             }
 
             sb.AppendLine();
@@ -162,22 +317,52 @@ public class DocumentTextExtractor : IDocumentTextExtractor
 
     private string ExtractCsvAsText(byte[] bytes)
     {
-        // Basic “safe” UTF8; if you expect other encodings, you can try detect or allow override.
         var csv = Encoding.UTF8.GetString(bytes);
-
-        // Turn into TSV-ish text for better chunking/embedding
         var rows = CsvParser.Parse(csv);
-        var sb = new StringBuilder();
-        sb.AppendLine("# Sheet: CSV");
 
-        foreach (var row in rows)
+        var sb = new StringBuilder(64 * 1024);
+        sb.AppendLine("=== Sheet: CSV ===");
+
+        if (rows.Count == 0)
+            return sb.ToString();
+
+        // Header from first non-empty row
+        int headerIndex = rows.FindIndex(r => r.Any(v => !string.IsNullOrWhiteSpace(v)));
+        if (headerIndex < 0)
+            return sb.ToString();
+
+        var headers = rows[headerIndex]
+            .Select((h, idx) => string.IsNullOrWhiteSpace(h) ? $"Column{idx + 1}" : h.Trim())
+            .ToArray();
+
+        for (int i = headerIndex + 1; i < rows.Count; i++)
         {
-            if (row.All(string.IsNullOrWhiteSpace)) continue;
-            sb.AppendLine(string.Join("\t", row.Select(c => (c ?? "").Trim())));
+            var row = rows[i].Select(c => (c ?? "").Trim()).ToArray();
+            if (row.All(string.IsNullOrWhiteSpace))
+                continue;
+
+            sb.Append($"Row {i + 1}: ");
+
+            bool any = false;
+            for (int c = 0; c < headers.Length; c++)
+            {
+                var v = c < row.Length ? row[c] : "";
+                if (!string.IsNullOrWhiteSpace(v)) any = true;
+
+                sb.Append(headers[c]);
+                sb.Append(": ");
+                sb.Append(string.IsNullOrWhiteSpace(v) ? "∅" : v);
+                sb.Append(" | ");
+            }
+
+            if (any)
+                sb.AppendLine();
         }
 
         return sb.ToString();
     }
+    
+    
 
     private static class CsvParser
     {

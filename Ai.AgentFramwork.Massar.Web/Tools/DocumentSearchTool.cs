@@ -143,8 +143,9 @@ public sealed class DocumentSearchTool
         var attachments = hits
             .Select(h =>
             {
-                if (h.Store == DocStore.Scoped && h.AttachmentId != null)
-                    return new DocumentAttachmentDescriptor(DocStore.Scoped, h.AttachmentId.Value, h.Title);
+                //Don't return the attachment for Scoped store 
+                //if (h.Store == DocStore.Scoped && h.AttachmentId != null)
+                //    return new DocumentAttachmentDescriptor(DocStore.Scoped, h.AttachmentId.Value, h.Title);
 
                 if (h.Store == DocStore.Global && h.DocumentFileId != null)
                     return new DocumentAttachmentDescriptor(DocStore.Global, h.DocumentFileId.Value, h.Title);

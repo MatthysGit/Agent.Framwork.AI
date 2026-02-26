@@ -269,13 +269,101 @@ public sealed class ChatConversationRepository : IChatConversationRepository
     {
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
 
-        var convo = await db.ChatConversations
-            .FirstOrDefaultAsync(c => c.ConversationId == conversationId && c.UserId == userId, ct);
+        var strategy = db.Database.CreateExecutionStrategy();
 
-        if (convo is null)
-            return;
+        await strategy.ExecuteAsync(async () =>
+        {
+            await using var tx = await db.Database.BeginTransactionAsync(ct);
 
-        db.ChatConversations.Remove(convo);
-        await db.SaveChangesAsync(ct);
+            var convoExists = await db.ChatConversations
+                .AnyAsync(c => c.ConversationId == conversationId && c.UserId == userId, ct);
+
+            if (!convoExists)
+                return;
+
+            // Collect AttachmentIds used by this conversation
+            var ingestAttachmentIdsQuery =
+                db.ChatConversationAttachmentIngests
+                  .Where(i => i.ConversationId == conversationId)
+                  .Select(i => i.AttachmentId);
+
+            var messageAttachmentIdsQuery =
+                db.ChatMessageAttachments
+                  .Where(a => a.Message.ConversationId == conversationId)
+                  .Select(a => a.AttachmentId);
+
+            var attachmentIds = await ingestAttachmentIdsQuery
+                .Union(messageAttachmentIdsQuery)
+                .Distinct()
+                .ToListAsync(ct);
+
+            // ---- Delete conversation attachment graph (embeddings -> chunks -> ingests) ----
+
+            await db.ChatConversationAttachmentChunkEmbeddings
+                .Where(e =>
+                    db.ChatConversationAttachmentChunks
+                      .Where(ch =>
+                          db.ChatConversationAttachmentIngests
+                            .Where(i => i.ConversationId == conversationId)
+                            .Select(i => i.ChatConversationAttachmentIngestId)
+                            .Contains(ch.ChatConversationAttachmentIngestId))
+                      .Select(ch => ch.ChatConversationAttachmentChunkId)
+                      .Contains(e.ChatConversationAttachmentChunkId))
+                .ExecuteDeleteAsync(ct);
+
+            await db.ChatConversationAttachmentChunks
+                .Where(ch =>
+                    db.ChatConversationAttachmentIngests
+                      .Where(i => i.ConversationId == conversationId)
+                      .Select(i => i.ChatConversationAttachmentIngestId)
+                      .Contains(ch.ChatConversationAttachmentIngestId))
+                .ExecuteDeleteAsync(ct);
+
+            await db.ChatConversationAttachmentIngests
+                .Where(i => i.ConversationId == conversationId)
+                .ExecuteDeleteAsync(ct);
+
+            // ---- Delete messages and message attachments ----
+
+            await db.ChatMessageAttachments
+                .Where(a => a.Message.ConversationId == conversationId)
+                .ExecuteDeleteAsync(ct);
+
+            await db.ChatMessages
+                .Where(m => m.ConversationId == conversationId)
+                .ExecuteDeleteAsync(ct);
+
+            // ---- Delete conversation ----
+
+            await db.ChatConversations
+                .Where(c => c.ConversationId == conversationId && c.UserId == userId)
+                .ExecuteDeleteAsync(ct);
+
+            // ---- Delete blobs/contents for attachments, only if they are not used elsewhere ----
+            if (attachmentIds.Count > 0)
+            {
+                var stillUsedByOtherConversations =
+                    db.ChatConversationAttachmentIngests
+                      .Where(i => attachmentIds.Contains(i.AttachmentId))
+                      .Select(i => i.AttachmentId);
+
+                var stillUsedByOtherMessages =
+                    db.ChatMessageAttachments
+                      .Where(a => attachmentIds.Contains(a.AttachmentId))
+                      .Select(a => a.AttachmentId);
+
+                var stillUsed = stillUsedByOtherConversations.Union(stillUsedByOtherMessages);
+
+                await db.ChatAttachmentContents
+                    .Where(b => attachmentIds.Contains(b.AttachmentId) && !stillUsed.Contains(b.AttachmentId))
+                    .ExecuteDeleteAsync(ct);
+
+                await db.ChatAttachmentBlobs
+                    .Where(b => attachmentIds.Contains(b.AttachmentId) && !stillUsed.Contains(b.AttachmentId))
+                    .ExecuteDeleteAsync(ct);
+            }
+
+            await tx.CommitAsync(ct);
+        });
     }
 }

@@ -1,7 +1,7 @@
 <div class="chat-header-container main-background-gradient">
     <div class="chat-header-controls page-width">
-        <button class="btn-default" @onclick="@OnNewChat">
-            <svg xmlns="http://www.w3.org/2000/svg"  fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="new-chat-icon">
+        <button class="btn-default new-chat-text" @onclick="@OnNewChat">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="new-chat-icon new-chat-text">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>
             </svg>
             New chat
@@ -10,6 +10,23 @@
 
     @* <h1 class="page-width">Ai.Massar</h1> *@
 </div>
+
+<style>
+
+    .new-chat-text {
+        font-weight: 300;
+        color: rgba(0, 0, 0, 0.70);
+        letter-spacing: 0.1px;
+        
+    }
+
+    .new-chat-icon {
+        width: 1.25rem;
+        height: 1.25rem;
+        color: rgba(0, 0, 0, 0.70);
+    }
+</style>
+
 
 @code {
     [Parameter] public EventCallback OnNewChat { get; set; }

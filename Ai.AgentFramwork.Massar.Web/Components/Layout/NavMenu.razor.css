@@ -80,7 +80,7 @@
     .nav-item ::deep a.active {
         /*background-color: rgba(255,255,255,0.37);*/
 
-        background-color: #F9C216;
+       /* background-color: #F9C216;*/
         color: darkblue;
         font-size:small;
         text-align:center;
@@ -107,7 +107,7 @@
 
     .nav-item ::deep .nav-link:hover {
         /* background-color: rgba(242,244,247,0.1);*/
-        background-color: lightgray;
+        //background-color: lightgray;
         color: darkblue;
         font-size: x-small;
     }
