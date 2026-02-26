@@ -18,6 +18,16 @@ public interface IUnifiedDocumentSearchService
         string embeddingModel,
         int topK = 8,
         CancellationToken ct = default);
+
+
+    Task<IReadOnlyList<DocumentSearchHit>> SearchScopedAsync(
+        string query,
+        Guid conversationId,
+        string embeddingModel,
+        int topK = 8,
+        CancellationToken ct = default);
+
+
 }
 
 public sealed class UnifiedDocumentSearchService : IUnifiedDocumentSearchService
@@ -34,6 +44,72 @@ public sealed class UnifiedDocumentSearchService : IUnifiedDocumentSearchService
         _dbFactory = dbFactory;
         _embeddings = embeddings;
            
+    }
+
+
+    public async Task<IReadOnlyList<DocumentSearchHit>> SearchScopedAsync(
+      string query,
+      Guid conversationId,
+      string embeddingModel,
+      int topK = 8,
+      CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return Array.Empty<DocumentSearchHit>();
+
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+
+        // 1) Embed query
+        var q = await _embeddings.EmbedAsync(query, embeddingModel, ct);
+
+        
+
+        // 2) Scoped candidates: only this conversation
+        var scopedCandidates = await (
+            from ing in db.ChatConversationAttachmentIngests.AsNoTracking()
+            join c in db.ChatConversationAttachmentChunks.AsNoTracking()
+                on ing.ChatConversationAttachmentIngestId equals c.ChatConversationAttachmentIngestId
+            join e in db.ChatConversationAttachmentChunkEmbeddings.AsNoTracking()
+                on c.ChatConversationAttachmentChunkId equals e.ChatConversationAttachmentChunkId
+            where ing.ConversationId == conversationId
+               && e.EmbeddingModel == embeddingModel
+            select new
+            {
+                ing.AttachmentId,
+                ing.FileName,
+                c.Text,
+                e.VectorBinary
+            }
+        ).ToListAsync(ct);
+
+        
+        var scopedHits = scopedCandidates
+            .Select(x =>
+            {
+                var v = VectorBytes.ToFloatArray(x.VectorBinary);
+                var score = Similarity.Cosine(q, v);
+                return new DocumentSearchHit(
+                    Store: DocStore.Scoped,
+                    Score: score,
+                    Title: x.FileName,
+                    Snippet: Snip(x.Text),
+                    PageNumber: null,
+                    DocumentId: null,
+                    DocumentFileId: null,
+                    AttachmentId: x.AttachmentId
+                );
+            })
+            .OrderByDescending(h => h.Score)
+            .Take(topK)
+            .ToList();
+
+        
+
+        // 6) Merge overall topK
+        return scopedHits
+            .OrderByDescending(h => h.Score)
+            .Take(topK)
+            .ToList();
     }
 
     public async Task<IReadOnlyList<DocumentSearchHit>> SearchAsync(

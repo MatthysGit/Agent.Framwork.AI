@@ -26,6 +26,7 @@ public sealed class ChatService
     private readonly AIAgent _orchestratorAgent;
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
     private readonly DocumentSearchTool _docSearchTool;
+    private readonly DocumentEditTool _docEditTool;
 
     private ChatSuggestions? _chatSuggestions;
 
@@ -48,7 +49,8 @@ public sealed class ChatService
         ChatAgentFactory agentFactory,
         ChatTools tools,
         IDbContextFactory<AppDbContext> dbFactory,
-        DocumentSearchTool docSearchTool) // ✅ NEW
+        DocumentSearchTool docSearchTool,
+        DocumentEditTool docEditTool)
     {
         _auth = auth;
         _session = session;
@@ -56,6 +58,7 @@ public sealed class ChatService
         _attachments = attachments;
         _dbFactory = dbFactory;
         _docSearchTool = docSearchTool;
+        _docEditTool = docEditTool;
 
         _orchestratorAgent = agentFactory.BuildOrchestratorAgent(
             tools,
@@ -124,22 +127,40 @@ public sealed class ChatService
 
         var t = text.ToLowerInvariant();
 
-        // If the user message already contains attachment links (your UI appends these)
         if (t.Contains("/api/chat/attachments/") || t.Contains("/documents/files/download/"))
             return true;
 
-        // File type hints
         if (t.Contains(".pdf") || t.Contains(".docx") || t.Contains(".doc") || t.Contains(".txt") ||
             t.Contains(".csv") || t.Contains(".xlsx") || t.Contains(".xls"))
             return true;
 
-        // Common “ask about doc contents” phrases
         if (t.Contains("according to") || t.Contains("in the document") || t.Contains("in the pdf") ||
             t.Contains("from the file") || t.Contains("what is included") || t.Contains("what does it say") ||
             t.Contains("summarize") || t.Contains("quote") || t.Contains("cite"))
             return true;
 
         return false;
+    }
+
+    private static bool IsDocumentEditIntent(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        var t = text.ToLowerInvariant();
+
+        return t.Contains("add comment")
+               || t.Contains("add comments")
+               || t.Contains("comment on")
+               || t.Contains("review the document")
+               || t.Contains("review this document")
+               || t.Contains("review")
+               || t.Contains("annotate")
+               || t.Contains("highlight")
+               || t.Contains("track changes")
+               || t.Contains("suggest changes")
+               || t.Contains("edit the document")
+               || t.Contains("proofread")
+               || t.Contains("revise");
     }
 
     private async Task<int[]> GetRoleIdsAsync(CancellationToken ct = default)
@@ -170,19 +191,9 @@ public sealed class ChatService
             .Select(u => u.RoleId)
             .FirstOrDefaultAsync(ct);
 
-        //return roleId == 0 ? Array.Empty<int>() : new[] { roleId };
         return roleId == 0 ? Array.Empty<int>() : (int[])new[] { roleId.Value };
-        
     }
 
-
-    
-
-    /// <summary>
-    /// Converts DocumentSearch response attachments into the SAME attachment type held in _session.CreatedAssistantAttachments.
-    /// - Scoped: reuses AttachmentId (assumes it already exists in ChatAttachmentBlob)
-    /// - Global: copies DocumentFiles.FileContent -> ChatAttachmentBlob and returns new AttachmentId
-    /// </summary>
     private async Task<IReadOnlyList<object>> MaterializeDocSearchAttachmentsAsync(
         Type attachmentType,
         DocumentAttachmentDescriptor[] descriptors,
@@ -224,12 +235,10 @@ public sealed class ChatService
 
             if (d.StoreValue == DocStore.Scoped)
             {
-                // Scoped: attachmentId == parsedId
                 result.Add(NewAttachment(parsedId, d.FileName, "application/octet-stream"));
                 continue;
             }
 
-            // Global: parsedId == DocumentFileId. Copy DocumentFiles -> ChatAttachmentBlob (requires CanDownload)
             var file = await db.DocumentFiles
                 .AsNoTracking()
                 .Where(f => f.DocumentFileId == parsedId)
@@ -270,7 +279,7 @@ public sealed class ChatService
     }
 
     public void StartNewChat() => _session.StartNewChat();
-    public void StartNewConversation() => _session.StartNewChat(); // back-compat
+    public void StartNewConversation() => _session.StartNewChat();
 
     public async Task<string?> GetMyUserIdAsync()
     {
@@ -362,7 +371,6 @@ public sealed class ChatService
 
         var conversationId = _session.ActiveConversationId!.Value;
 
-        // Save uploads
         var userAttachments = await _attachments.SaveUploadedFilesAsync(conversationId, files, streamCt);
         var userText = _attachments.AppendAttachmentLinks(GetText(userMessage), userAttachments);
 
@@ -377,34 +385,107 @@ public sealed class ChatService
             attachments: userAttachments,
             ct: persistCt);
 
-        // Prepare streaming assistant message
         _session.ClearAssistantAttachments();
         var responseText = new TextContent("");
         var inProgress = new ChatMessage(ChatRole.Assistant, new[] { responseText });
         _session.SetStreamingMessage(inProgress);
 
-        // ✅ Hard bypass: call document search tool directly for document-like questions
-        if (LooksLikeDocumentQuestion(userText))
+        var rawUserQuery = StripMarkdownLinks(GetText(userMessage));
+
+        // ✅ PATCH: EDIT path now parses JSON + materializes attachments + appends attachment links
+        if (IsDocumentEditIntent(rawUserQuery) || IsDocumentEditIntent(userText))
         {
-            // End streaming (we'll set final assistant message ourselves)
             _session.ClearStreamingMessage();
 
-            var query = GetText(userMessage);
+            var editInstruction = "add comments";
+            var lower = rawUserQuery.ToLowerInvariant();
+            if (lower.Contains("comment"))
+                editInstruction = "add comments";
+            else if (lower.Contains("annotate"))
+                editInstruction = "annotate with comments";
+            else if (lower.Contains("highlight"))
+                editInstruction = "highlight issues and add comments";
+            else if (lower.Contains("proofread"))
+                editInstruction = "proofread and add comments";
+            else if (lower.Contains("revise") || lower.Contains("edit"))
+                editInstruction = "make suggested edits and add comments";
 
-            // Optional: strip markdown links that might be in the user text anyway
-            query = StripMarkdownLinks(query);
+            var json = await _docEditTool.EditDocumentAsync(conversationId, rawUserQuery, editInstruction);
 
-            var json = await _docSearchTool.SearchDocumentsAsync(conversationId, query);
-
-            // Parse tool JSON (capital keys supported)
             if (TryParseDocSearchJson(json, out var docPayload) && docPayload is not null)
             {
                 var roleIds = await GetRoleIdsAsync(persistCt);
 
-                // Infer attachment element type from _session.CreatedAssistantAttachments (List<T>)
                 var listObj = (object)_session.CreatedAssistantAttachments;
                 var listType = listObj.GetType();
-                var attachmentType = listType.IsGenericType ? listType.GetGenericArguments()[0] : throw new InvalidOperationException("CreatedAssistantAttachments must be List<T>.");
+                var attachmentType = listType.IsGenericType
+                    ? listType.GetGenericArguments()[0]
+                    : throw new InvalidOperationException("CreatedAssistantAttachments must be List<T>.");
+
+                var created = await MaterializeDocSearchAttachmentsAsync(
+                    attachmentType,
+                    docPayload.Attachments ?? Array.Empty<DocumentAttachmentDescriptor>(),
+                    roleIds,
+                    persistCt);
+
+                var asIList = (IList)listObj;
+                foreach (var a in created)
+                    asIList.Add(a);
+
+                var assistantText2 = _attachments.AppendAttachmentLinks(
+                    docPayload.Text ?? string.Empty,
+                    _session.CreatedAssistantAttachments);
+
+                _session.AddMessage(new ChatMessage(ChatRole.Assistant, assistantText2));
+
+                await _repo.AppendMessageAsync(
+                    conversationId,
+                    senderRole: "assistant",
+                    content: assistantText2,
+                    contentType: "text/markdown",
+                    metadataJson: null,
+                    attachments: _session.CreatedAssistantAttachments,
+                    ct: persistCt);
+
+                _chatSuggestions?.Update(_session.Messages);
+                yield return _session.Messages;
+                yield break;
+            }
+
+            var fallbackText = string.IsNullOrWhiteSpace(json) ? "No edit result returned." : json;
+            _session.AddMessage(new ChatMessage(ChatRole.Assistant, fallbackText));
+
+            await _repo.AppendMessageAsync(
+                conversationId,
+                senderRole: "assistant",
+                content: fallbackText,
+                contentType: "text/markdown",
+                metadataJson: null,
+                attachments: _session.CreatedAssistantAttachments,
+                ct: persistCt);
+
+            _chatSuggestions?.Update(_session.Messages);
+            yield return _session.Messages;
+            yield break;
+        }
+
+        // Search path unchanged
+        if (LooksLikeDocumentQuestion(userText))
+        {
+            _session.ClearStreamingMessage();
+
+            var query = rawUserQuery;
+            var json = await _docSearchTool.SearchDocumentsAsync(conversationId, query);
+
+            if (TryParseDocSearchJson(json, out var docPayload) && docPayload is not null)
+            {
+                var roleIds = await GetRoleIdsAsync(persistCt);
+
+                var listObj = (object)_session.CreatedAssistantAttachments;
+                var listType = listObj.GetType();
+                var attachmentType = listType.IsGenericType
+                    ? listType.GetGenericArguments()[0]
+                    : throw new InvalidOperationException("CreatedAssistantAttachments must be List<T>.");
 
                 var created = await MaterializeDocSearchAttachmentsAsync(
                     attachmentType,
@@ -437,7 +518,6 @@ public sealed class ChatService
             }
             else
             {
-                // If JSON didn't parse, still show raw output
                 var assistantText2 = json ?? "No relevant information found.";
                 _session.AddMessage(new ChatMessage(ChatRole.Assistant, assistantText2));
 
@@ -456,7 +536,7 @@ public sealed class ChatService
             }
         }
 
-        // Otherwise: use orchestrator (normal chat flow)
+        // Orchestrator path unchanged
         await foreach (var update in _orchestratorAgent.RunStreamingAsync(
             messages: ChatMessageWindow.ToSafeTextOnlyMessages(_session.Messages, takeLast: 40),
             cancellationToken: streamCt))
@@ -473,7 +553,6 @@ public sealed class ChatService
             rawAssistant,
             _session.CreatedAssistantAttachments);
 
-        // Auto-embed first image if present but not embedded
         var firstImage = _session.CreatedAssistantAttachments
             .FirstOrDefault(a => a.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase));
 
@@ -504,16 +583,13 @@ public sealed class ChatService
     {
         if (string.IsNullOrWhiteSpace(input)) return string.Empty;
 
-        // Remove markdown links: [text](url)
-        // Keep only the visible text portion.
-        // Very simple approach that works for your attachment link format.
         return System.Text.RegularExpressions.Regex.Replace(
             input,
             @"\[(?<text>[^\]]+)\]\((?<url>[^)]+)\)",
             "${text}",
             System.Text.RegularExpressions.RegexOptions.Multiline);
     }
-    
+
     private static string GetText(ChatMessage? m)
     {
         if (m is null) return string.Empty;

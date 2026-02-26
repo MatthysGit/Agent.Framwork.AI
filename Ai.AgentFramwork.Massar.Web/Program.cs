@@ -160,7 +160,7 @@ builder.Services.AddScoped<IChatContext, ChatContext>();
 builder.Services.AddScoped<IEmbeddingProvider, OpenAiEmbeddingProvider>();
 builder.Services.AddScoped<IUnifiedDocumentSearchService, UnifiedDocumentSearchService>();
 builder.Services.AddScoped<DocumentSearchTool>();
-
+builder.Services.AddScoped<DocumentEditTool>();
 
 builder.Services.AddKeyedSingleton("ingestion_directory",
     new DirectoryInfo(Path.Combine(builder.Environment.WebRootPath, "Data")));

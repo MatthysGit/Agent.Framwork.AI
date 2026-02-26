@@ -157,10 +157,10 @@ public sealed class ChatConversationRepository : IChatConversationRepository
     }
 
     public async Task<(List<ChatMessage> Messages, Guid ConversationId)> LoadConversationAsync(
-        string userId,
-        Guid conversationId,
-        Func<string, IEnumerable<ChatAttachmentInfo>, string> appendAttachmentLinks,
-        CancellationToken ct = default)
+      string userId,
+      Guid conversationId,
+      Func<string, IEnumerable<ChatAttachmentInfo>, string> appendAttachmentLinks,
+      CancellationToken ct = default)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
 
@@ -197,6 +197,23 @@ public sealed class ChatConversationRepository : IChatConversationRepository
             _ => ChatRole.Assistant
         };
 
+        // PATCH: strip any previously-saved attachments block from m.Content to prevent duplication.
+        static string StripSavedAttachmentsBlock(string content)
+        {
+            if (string.IsNullOrWhiteSpace(content))
+                return string.Empty;
+
+            // We only want to remove the UI-rendered attachments section that your system appends.
+            // It usually starts with "**Attachments**" on its own line.
+            // We’ll remove from the FIRST occurrence to the end of the message.
+            var idx = content.IndexOf("**Attachments**", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0)
+                return content;
+
+            // If attachments header is at the top or later, strip it and anything after it.
+            return content.Substring(0, idx).TrimEnd();
+        }
+
         var list = new List<ChatMessage>();
 
         foreach (var m in dbMessages)
@@ -205,7 +222,11 @@ public sealed class ChatConversationRepository : IChatConversationRepository
                 ? (IEnumerable<ChatAttachmentInfo>)listAtts
                 : Array.Empty<ChatAttachmentInfo>();
 
-            var text = appendAttachmentLinks(m.Content ?? string.Empty, msgAtts);
+            var baseContent = StripSavedAttachmentsBlock(m.Content ?? string.Empty);
+
+            // Only append attachments once (from ChatMessageAttachments)
+            var text = appendAttachmentLinks(baseContent, msgAtts);
+
             list.Add(new ChatMessage(MapRole(m.SenderRole), text));
         }
 
