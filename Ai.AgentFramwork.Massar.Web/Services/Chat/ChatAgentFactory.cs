@@ -19,6 +19,7 @@ public sealed class ChatAgentFactory
     public const string DocumentSearchAgentName = "DocumentSearchAgent";
     public const string SqlAgentName = "SqlAgent";
     public const string LlmChatAgentName = "LlmChatAgent";
+    public const string DocumentEditAgentName = "DocumentEditAgent";
 
     private readonly IConfiguration _configuration;
     private readonly IAgentRegistry _registry;
@@ -32,18 +33,14 @@ public sealed class ChatAgentFactory
     }
 
     private sealed class DocumentSearchToolWrapper
-    
-    
     {
         private readonly DocumentSearchTool _inner;
         private readonly ChatSession _session;
 
-
-        public DocumentSearchToolWrapper(DocumentSearchTool inner,ChatSession session)
+        public DocumentSearchToolWrapper(DocumentSearchTool inner, ChatSession session)
         {
             _inner = inner;
             _session = session;
-            
         }
 
         [Description("Search documents for a conversation. conversationId MUST be a GUID string. Returns JSON.")]
@@ -51,16 +48,21 @@ public sealed class ChatAgentFactory
             [Description("Conversation Id as GUID string")] string conversationId,
             [Description("Search query")] string query)
         {
-            
+            // PATCH: Use the passed conversationId first (agent provides it).
+            // Fallback to session.ActiveConversationId if caller passed empty/invalid.
+            Guid convoId;
 
-
-            if (!Guid.TryParse(_session.ActiveConversationId!.Value.ToString(), out var convoId))
-                return Task.FromResult(@"{""Text"":""Invalid conversation id."",""Attachments"":[]}");
+            if (!Guid.TryParse(conversationId, out convoId))
+            {
+                var fallback = _session.ActiveConversationId?.ToString();
+                if (string.IsNullOrWhiteSpace(fallback) || !Guid.TryParse(fallback, out convoId))
+                    return Task.FromResult(@"{""Text"":""Invalid conversation id."",""Attachments"":[]}");
+            }
 
             return _inner.SearchDocumentsAsync(convoId, query);
         }
     }
-    
+
     public AIAgent BuildOrchestratorAgent(
         ChatTools tools,
         ChatSession session,
@@ -72,24 +74,26 @@ public sealed class ChatAgentFactory
 
         var sqlServerSelectTool = new SqlServerSelectTool((IConfigurationRoot)_configuration, auth);
 
-
-
         var docSearchTool = _services.GetRequiredService<DocumentSearchTool>();
         var docSearchToolWrapper = new DocumentSearchToolWrapper(docSearchTool, session);
-
-
-
+        var docEditTool = _services.GetRequiredService<DocumentEditTool>();
 
         // Register specialized agents
         _registry.Register(SqlAgentName, BuildSqlAgent(chatCompletionClient, sqlServerSelectTool));
         _registry.Register(LlmChatAgentName, BuildGeneralChatAgent(chatCompletionClient, tools));
         _registry.Register(DocumentSearchAgentName, BuildDocumentSearchAgent(chatCompletionClient, docSearchToolWrapper));
+        _registry.Register(DocumentEditAgentName, BuildDocumentEditAgent(chatCompletionClient, docEditTool));
 
         // Orchestrator calls agents via AgentCallerTool
         var caller = new AgentCallerTool(
             _registry,
             historyProvider: () => ChatMessageWindow.ToSafeTextOnlyMessages(session.Messages, takeLast: 40),
-            onRoute: _ => { /* optional */ });
+
+            // PATCH: Log routing so you can SEE which agent is being selected.
+            onRoute: route =>
+            {
+                Console.WriteLine($"[OrchestratorRoute] {route}");
+            });
 
         // Orchestrator tool: provide the current conversation id
         Task<string> GetConversationId()
@@ -97,6 +101,10 @@ public sealed class ChatAgentFactory
 
         return chatCompletionClient.AsAIAgent(
             name: "OrchestratorAgent",
+
+            // PATCH: Make EDIT routing higher priority than SEARCH.
+            // The previous version forced DocumentSearch for any message mentioning doc/docx/links,
+            // which prevents DocumentEdit from being called for "review and add comments".
             instructions: $@"You are the orchestrator.
 
 Your job:
@@ -107,16 +115,36 @@ Your job:
 
 Available agents:
 1) {DocumentSearchAgentName} - search uploaded documents (global + scoped chat attachments) and return JSON.
-2) {SqlAgentName} - SQL / database questions and anything requiring SELECT queries.
-3) {LlmChatAgentName} - general conversation and everything else.
+2) {DocumentEditAgentName} - edit uploaded documents (add comments, modify content) and return JSON.
+3) {SqlAgentName} - SQL / database questions and anything requiring SELECT queries.
+4) {LlmChatAgentName} - general conversation and everything else.
 
-DOCUMENT CALL FORMAT (MANDATORY):
+DOCUMENT SEARCH CALL FORMAT (MANDATORY):
 - Before calling {DocumentSearchAgentName}, you MUST call GetConversationId.
 - Then call {DocumentSearchAgentName} with the userMessage EXACTLY formatted as:
   CONVERSATION_ID: <guid>
   QUERY: <the user's original question>
 
-ABSOLUTE DOCUMENT ROUTING RULE (MUST FOLLOW):
+DOCUMENT EDIT CALL FORMAT (MANDATORY):
+- Before calling {DocumentEditAgentName}, you MUST call GetConversationId.
+- Then call {DocumentEditAgentName} with the userMessage EXACTLY formatted as:
+  CONVERSATION_ID: <guid>
+  QUERY: <the user's original question>
+  EDIT_INSTRUCTION: <the user's edit instruction, e.g. 'add comments', 'highlight issues', 'rewrite section 2', etc.>
+
+ABSOLUTE DOCUMENT ROUTING RULES (MUST FOLLOW):
+
+A) DOCUMENT EDIT INTENT (HIGHEST PRIORITY):
+- If the user's message requests to edit/review/comment/annotate/highlight/suggest changes/track changes/rewrite/fix grammar/modify a document,
+  you MUST call {DocumentEditAgentName} using the DOCUMENT EDIT CALL FORMAT.
+- Examples that MUST route to {DocumentEditAgentName}:
+  'Please review the document and add comments'
+  'Annotate this doc'
+  'Add comments to the policy'
+  'Proofread and suggest changes'
+- This rule applies EVEN IF the message contains file links or file extensions.
+
+B) DOCUMENT SEARCH / LOOKUP INTENT (ONLY IF NOT EDITING):
 - If the user's message OR recent chat context contains ANY of the following, you MUST call {DocumentSearchAgentName}:
   - file links like '/api/chat/attachments/' or '/documents/files/download/'
   - file extensions/keywords: pdf, doc, docx, txt, csv, xls, xlsx
@@ -130,63 +158,64 @@ ROUTING PROCEDURE (MUST FOLLOW IN ORDER):
    0.2) The SQL agent MUST return ONLY JSON in one of the supported schemas below (no markdown, no prose).
 
    0.3) Chart tool mapping (call exactly one):
-        - chartType ""bar""   => CreateBarChartPngAsync(title, xAxisLabel, yAxisLabel, labels, values)
-        - chartType ""pie""   => CreatePieChartPngAsync(title, labels, values)
-        - chartType ""line""  => CreateLineChartPngAsync(title, xAxisLabel, yAxisLabel, labels, values)
-        - chartType ""area""  => CreateAreaChartPngAsync(title, xAxisLabel, yAxisLabel, labels, values)
-        - chartType ""donut"" => CreateDonutChartPngAsync(title, labels, values)
-        - chartType ""gauge"" => CreateGaugeChartPngAsync(title, value, min, max)
-        - chartType ""progress"" => CreateProgressBarsChartPngAsync(title, labels, values)
-        - chartType ""multicolumn"" => CreateMultiSeriesColumnChartPngAsync(title, xAxisLabel, yAxisLabel, labels, series)
+        - chartType """"bar""""   => CreateBarChartPngAsync(title, xAxisLabel, yAxisLabel, labels, values)
+        - chartType """"pie""""   => CreatePieChartPngAsync(title, labels, values)
+        - chartType """"line""""  => CreateLineChartPngAsync(title, xAxisLabel, yAxisLabel, labels, values)
+        - chartType """"area""""  => CreateAreaChartPngAsync(title, xAxisLabel, yAxisLabel, labels, values)
+        - chartType """"donut"""" => CreateDonutChartPngAsync(title, labels, values)
+        - chartType """"gauge"""" => CreateGaugeChartPngAsync(title, value, min, max)
+        - chartType """"progress"""" => CreateProgressBarsChartPngAsync(title, labels, values)
+        - chartType """"multicolumn"""" => CreateMultiSeriesColumnChartPngAsync(title, xAxisLabel, yAxisLabel, labels, series)
 
    0.4) Return ONLY the markdown image:
         ![chart](URL)
 
 1) If the request is clearly SQL/database (no chart) => call {SqlAgentName} using CallAgentAsync.
-2) If the request is document-related per the ABSOLUTE DOCUMENT ROUTING RULE => call {DocumentSearchAgentName} using the DOCUMENT CALL FORMAT.
-3) Otherwise call {LlmChatAgentName} using CallAgentAsync.
+2) If the request is document-editing related (Rule A) => call {DocumentEditAgentName} using the DOCUMENT EDIT CALL FORMAT.
+3) If the request is document-related lookup/search (Rule B) => call {DocumentSearchAgentName} using the DOCUMENT SEARCH CALL FORMAT.
+4) Otherwise call {LlmChatAgentName} using CallAgentAsync.
 
 Supported JSON schemas from {SqlAgentName}:
 
 Single-series charts:
-{{
-  ""chartType"": ""bar"" | ""pie"" | ""line"" | ""area"" | ""donut"",
-  ""title"": ""..."",
-  ""xAxisLabel"": ""..."",
-  ""yAxisLabel"": ""..."",
-  ""labels"": [""A"", ""B""],
-  ""values"": [123, 456]
-}}
+{{{{
+  """"chartType"""": """"bar"""" | """"pie"""" | """"line"""" | """"area"""" | """"donut"""",
+  """"title"""": """"..."""",
+  """"xAxisLabel"""": """"..."""",
+  """"yAxisLabel"""": """"..."""",
+  """"labels"""": [""""A"""", """"B""""],
+  """"values"""": [123, 456]
+}}}}
 
 Multi-series column chart:
-{{
-  ""chartType"": ""multicolumn"",
-  ""title"": ""..."",
-  ""xAxisLabel"": ""..."",
-  ""yAxisLabel"": ""..."",
-  ""labels"": [""A"", ""B""],
-  ""series"": [
-    {{ ""name"": ""Series1"", ""values"": [10, 20] }},
-    {{ ""name"": ""Series2"", ""values"": [5, 7] }}
+{{{{
+  """"chartType"""": """"multicolumn"""",
+  """"title"""": """"..."""",
+  """"xAxisLabel"""": """"..."""",
+  """"yAxisLabel"""": """"..."""",
+  """"labels"""": [""""A"""", """"B""""],
+  """"series"""": [
+    {{{{ """"name"""": """"Series1"""", """"values"""": [10, 20] }}}},
+    {{{{ """"name"""": """"Series2"""", """"values"""": [5, 7] }}}}
   ]
-}}
+}}}}
 
 Gauge chart:
-{{
-  ""chartType"": ""gauge"",
-  ""title"": ""..."",
-  ""value"": 75,
-  ""min"": 0,
-  ""max"": 100
-}}
+{{{{
+  """"chartType"""": """"gauge"""",
+  """"title"""": """"..."""",
+  """"value"""": 75,
+  """"min"""": 0,
+  """"max"""": 100
+}}}}
 
 Progress bars chart:
-{{
-  ""chartType"": ""progress"",
-  ""title"": ""..."",
-  ""labels"": [""A"", ""B""],
-  ""values"": [40, 80]
-}}
+{{{{
+  """"chartType"""": """"progress"""",
+  """"title"""": """"..."""",
+  """"labels"""": [""""A"""", """"B""""],
+  """"values"""": [40, 80]
+}}}}
 
 CRITICAL OUTPUT RULES:
 - After calling CallAgentAsync, you will receive an object with fields AgentName and Text.
@@ -233,6 +262,30 @@ You MUST:
             tools:
             [
                 AIFunctionFactory.Create(tool.SearchDocumentsAsync)
+            ]);
+    }
+
+    private AIAgent BuildDocumentEditAgent(ChatClient chatCompletionClient, DocumentEditTool editTool)
+    {
+        return chatCompletionClient.AsAIAgent(
+            name: DocumentEditAgentName,
+            instructions: @"
+You are the Document Edit agent.
+
+INPUT FORMAT (userMessage):
+CONVERSATION_ID: <guid>
+QUERY: <text>
+EDIT_INSTRUCTION: <text>
+
+You MUST:
+1) Extract the GUID string after 'CONVERSATION_ID:'.
+2) Extract the query after 'QUERY:'.
+3) Extract the edit instruction after 'EDIT_INSTRUCTION:'.
+4) Call EditDocumentAsync(conversationId, query, editInstruction) EXACTLY ONCE.
+5) Return ONLY the exact JSON returned by the tool.
+",
+            tools: [
+                AIFunctionFactory.Create(editTool.EditDocumentAsync)
             ]);
     }
 
@@ -324,9 +377,4 @@ internal static class ChatMessageWindow
 
         return safe;
     }
-
-
-
-
 }
-
