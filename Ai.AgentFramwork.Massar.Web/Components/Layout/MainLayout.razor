@@ -1,10 +1,11 @@
 ﻿@inherits LayoutComponentBase
 @using Microsoft.AspNetCore.Components.Authorization
+@using MudBlazor
 
 @inject CurrentUserBootstrapper Bootstrapper
 @inject NavigationManager Nav
 
-<MudThemeProvider />
+<MudThemeProvider Theme="_theme" />
 <MudPopoverProvider />
 <MudDialogProvider />
 <MudSnackbarProvider />
@@ -12,36 +13,34 @@
 <MudLayout>
 
     <!-- Top App Bar -->
-    <MudAppBar Elevation="1" Dense="true" Class="appbar">
+    <MudAppBar Elevation="0" Dense="true" Class="appbar">
         <MudIconButton Icon="@Icons.Material.Filled.Menu"
                        Color="Color.Inherit"
                        Edge="Edge.Start"
-                       OnClick="ToggleDrawer" />
+                       OnClick="ToggleDrawer"
+                       Class="appbar-icon" />
 
-        @* <MudText Typo="Typo.subtitle1" Class="appbar-title">Massar AI</MudText> *@
-        
         <div class="drawer-logo">
             <img src="images/massar.png"
                  alt="Massar"
                  class="drawer-logo-img"
                  onerror="this.style.display='none'; this.nextElementSibling.style.display='block';" />
-
-          
         </div>
 
         <MudSpacer />
 
         <AuthorizeView>
             <Authorized>
-                <MudText Typo="Typo.body2" Class="me-2">@context.User.Identity?.Name</MudText>
+                <MudText Typo="Typo.body2" Class="me-2 appbar-username">@context.User.Identity?.Name</MudText>
 
                 <form method="post" action="/auth/logout">
                     <MudButton HtmlTag="button"
                                ButtonType="ButtonType.Submit"
                                Variant="Variant.Outlined"
-                               Color="Color.Inherit"
+                               Color="Color.Primary"
                                Size="Size.Small"
-                               StartIcon="@Icons.Material.Filled.Logout">
+                               StartIcon="@Icons.Material.Filled.Logout"
+                               Class="appbar-btn">
                         Sign out
                     </MudButton>
                 </form>
@@ -52,7 +51,8 @@
                            Color="Color.Primary"
                            Size="Size.Small"
                            StartIcon="@Icons.Material.Filled.Login"
-                           OnClick="@(() => Nav.NavigateTo("/login"))">
+                           OnClick="@(() => Nav.NavigateTo("/login"))"
+                           Class="appbar-btn">
                     Sign in
                 </MudButton>
             </NotAuthorized>
@@ -62,15 +62,11 @@
     <!-- Left Drawer / Sidebar -->
     <MudDrawer @bind-Open="_drawerOpen"
                Variant="DrawerVariant.Responsive"
-               Elevation="1"
+               Elevation="0"
                Width="180px"
                ClipMode="DrawerClipMode.Always"
                Class="drawer">
 
-        <!-- Logo -->
-
-
-        <!-- Nav -->
         <div class="drawer-nav">
             <NavMenu />
         </div>
@@ -86,67 +82,124 @@
 </MudLayout>
 
 <style>
-    /* AppBar */
+    :root {
+        --ai-primary: #5B7CFA;
+        --ai-secondary: #7C5CFF;
+        --ui-bg: #F6F8FF;
+        --ui-surface: rgba(255,255,255,0.80);
+        --text-strong: rgba(15, 23, 42, 0.92);
+        --text: rgba(15, 23, 42, 0.78);
+        --line: rgba(15, 23, 42, 0.08);
+        --shadow: 0 10px 30px rgba(2, 6, 23, 0.06);
+        --shadow-soft: 0 6px 18px rgba(2, 6, 23, 0.05);
+        --radius-lg: 16px;
+    }
+
+    /* App background */
+    .mud-layout {
+        background: var(--ui-bg);
+    }
+
+    /* -----------------------
+           TOP APP BAR (glass)
+           ----------------------- */
     .appbar {
-        background: #ffffff;
-        color: rgba(0,0,0,.78);
-        border-bottom: 0.5px solid rgba(0,0,0,.06);
+        background: var(--ui-surface);
+        color: var(--text-strong);
+        border-bottom: 1px solid var(--line);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        box-shadow: 0 6px 18px rgba(2, 6, 23, 0.04);
     }
 
-    .appbar-title {
-        font-weight: 600;
-        letter-spacing: .2px;
-        margin-left: 6px;
+    .appbar-icon .mud-button-root,
+    .mud-icon-button.appbar-icon {
+        border-radius: 12px;
     }
 
+    .appbar-username {
+        color: var(--text);
+    }
 
-    .mud-layout .mud-main-content {
-    margin-left: 180px;
-}
-
-/* When drawer is closed (hamburger), remove the offset */
-.mud-drawer--closed ~ .mud-main-content {
-    margin-left: 0 !important;
-}
-
-    /* Drawer */
-    .drawer {
-        /* background: linear-gradient(180deg, #0b1f3a 0%, #0a1830 100%); */
-        background: var(--header-color); 
-        /* color: rgba(255,255,255,.88); */
-       
+    .appbar-btn {
+        border-radius: 12px;
     }
 
     .drawer-logo {
-        height: 64px;
+        height: 56px;
         display: flex;
         align-items: center;
-        justify-content: center;
-        padding: 10px 12px;
-        border-bottom: 1px solid rgba(255,255,255,.08);
+        gap: 10px;
+        padding: 6px 10px;
     }
 
     .drawer-logo-img {
-        height: 34px;
+        height: 30px;
         width: auto;
         object-fit: contain;
         display: block;
+        filter: saturate(1.05);
     }
 
-    .drawer-logo-fallback {
-        font-weight: 700;
-        letter-spacing: 1px;
-        font-size: 14px;
-        color: rgba(255,255,255,.92);
+    /* -----------------------
+           DRAWER / SIDEBAR (light + airy)
+           ----------------------- */
+    .drawer {
+        background: linear-gradient(180deg, #F7F9FF 0%, #F3F6FF 100%);
+        color: var(--text);
+        border-right: 1px solid var(--line);
+        box-shadow: var(--shadow-soft);
     }
 
     .drawer-nav {
         padding: 10px 10px 14px 10px;
     }
 
-    /* Main content */
+    /* Nav link styling (MudBlazor NavMenu / NavLink) */
+    .drawer .mud-nav-link {
+        border-radius: 12px;
+        margin: 6px 6px;
+        padding: 10px 12px;
+        color: var(--text);
+        transition: background .15s ease, box-shadow .15s ease, transform .08s ease;
+    }
+
+        .drawer .mud-nav-link:hover {
+            background: rgba(91, 124, 250, 0.08);
+            box-shadow: 0 6px 14px rgba(2, 6, 23, 0.04);
+            transform: translateY(-1px);
+        }
+
+        /* Active link */
+        .drawer .mud-nav-link-active,
+        .drawer .mud-nav-link.active {
+            background: linear-gradient(90deg, rgba(91,124,250,0.18), rgba(124,92,255,0.12));
+            color: var(--text-strong);
+            position: relative;
+        }
+
+            .drawer .mud-nav-link-active::before,
+            .drawer .mud-nav-link.active::before {
+                content: "";
+                position: absolute;
+                left: 6px;
+                top: 10px;
+                bottom: 10px;
+                width: 3px;
+                border-radius: 999px;
+                background: linear-gradient(180deg, var(--ai-primary), var(--ai-secondary));
+                opacity: 0.95;
+            }
+
+        .drawer .mud-nav-link .mud-icon-root {
+            opacity: 0.86;
+        }
+
+    /* -----------------------
+           MAIN CONTENT
+           ----------------------- */
     .main {
-        background: #f6f7fb;
+        background: var(--ui-bg);
         min-height: calc(100vh - 56px);
     }
 
@@ -154,21 +207,44 @@
         padding: 18px 18px 24px 18px;
     }
 
-    /* Nice scrollbar in drawer (optional) */
-    .drawer ::-webkit-scrollbar {
-        width: 10px;
+    /* Keep your 180px layout behavior */
+    .mud-layout .mud-main-content {
+        margin-left: 180px;
     }
 
-    .drawer ::-webkit-scrollbar-thumb {
-        background: rgba(255,255,255,.12);
-        border-radius: 999px;
-        border: 2px solid rgba(0,0,0,0);
-        background-clip: padding-box;
+    /* When drawer is closed (hamburger), remove the offset */
+    .mud-drawer--closed ~ .mud-main-content {
+        margin-left: 0 !important;
+    }
+
+    /* Optional: soften Mud surfaces */
+    .mud-paper, .mud-card {
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow);
+        border: 1px solid rgba(15, 23, 42, 0.06);
     }
 </style>
 
 @code {
     private bool _drawerOpen = true;
+
+    // Soft AI light theme
+    private readonly MudTheme _theme = new MudTheme()
+    {
+        PaletteLight = new PaletteLight()
+        {
+            Primary = "#5B7CFA",
+            Secondary = "#7C5CFF",
+            Background = "#F6F8FF",
+            Surface = "#FFFFFF",
+            AppbarBackground = "rgba(255,255,255,0.78)",
+            AppbarText = "rgba(15, 23, 42, 0.88)",
+            DrawerBackground = "#F7F9FF",
+            DrawerText = "rgba(15, 23, 42, 0.78)",
+            TextPrimary = "rgba(15, 23, 42, 0.92)",
+            TextSecondary = "rgba(15, 23, 42, 0.62)",
+        }
+    };
 
     private void ToggleDrawer() => _drawerOpen = !_drawerOpen;
 

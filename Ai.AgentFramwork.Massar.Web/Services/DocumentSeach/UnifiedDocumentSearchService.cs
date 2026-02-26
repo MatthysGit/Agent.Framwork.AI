@@ -221,7 +221,7 @@ public sealed class UnifiedDocumentSearchService : IUnifiedDocumentSearchService
 
         var finalizedGlobal = globalHits
             .Select(h => h with { DocumentFileId = fileMap.GetValueOrDefault(h.DocumentId!.Value) })
-            .Where(h => h.DocumentFileId != null)
+            .Where(h => h.DocumentFileId != null && h.Score >= 0.6)
             .OrderByDescending(h => h.Score)
             .Take(topK)
             .ToList();

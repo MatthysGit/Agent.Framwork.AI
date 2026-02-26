@@ -19,6 +19,7 @@
     <EmbeddedResource Remove="App_Data\t\**" />
     <None Remove="App_Data\NewFolder\**" />
     <None Remove="App_Data\t\**" />
+    <EmbeddedResource Include="Services\Chat\AgentPrompts\*.md" />
   </ItemGroup>
 
 	<ItemGroup>
@@ -74,6 +75,24 @@
     <Content Update="wwwroot\Data\Example_Emergency_Survival_Kit.pdf">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Services\Chat\AgentPrompts\DocumentEdit.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Services\Chat\AgentPrompts\DocumentSearch.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Services\Chat\AgentPrompts\GeneralChat.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Services\Chat\AgentPrompts\Orchestrator.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Services\Chat\AgentPrompts\Sql.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

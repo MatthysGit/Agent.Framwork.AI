@@ -51,6 +51,7 @@ public sealed class ChatAgentFactory
             // PATCH: Use the passed conversationId first (agent provides it).
             // Fallback to session.ActiveConversationId if caller passed empty/invalid.
             Guid convoId;
+            conversationId = _session.ActiveConversationId?.ToString() ?? "";
 
             if (!Guid.TryParse(conversationId, out convoId))
             {
@@ -99,12 +100,24 @@ public sealed class ChatAgentFactory
         Task<string> GetConversationId()
             => Task.FromResult(session.ActiveConversationId?.ToString() ?? "");
 
+        //Maybe in prod
+        //var orchestratorTemplate =
+        //    PromptLoader.LoadEmbeddedBySuffix(typeof(ChatAgentFactory), "Orchestrator.md");
+
+        //var orchestratorInstructions = orchestratorTemplate
+        //    .Replace("{SqlAgentName}", SqlAgentName)
+        //    .Replace("{DocumentSearchAgentName}", DocumentSearchAgentName)
+        //    .Replace("{DocumentEditAgentName}", DocumentEditAgentName)
+        //    .Replace("{LlmChatAgentName}", LlmChatAgentName);
+
         return chatCompletionClient.AsAIAgent(
+            
             name: "OrchestratorAgent",
 
             // PATCH: Make EDIT routing higher priority than SEARCH.
             // The previous version forced DocumentSearch for any message mentioning doc/docx/links,
             // which prevents DocumentEdit from being called for "review and add comments".
+            //orchestratorInstructions
             instructions: $@"You are the orchestrator.
 
 Your job:

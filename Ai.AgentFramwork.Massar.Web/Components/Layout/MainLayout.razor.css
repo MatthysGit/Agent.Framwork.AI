@@ -107,4 +107,11 @@ main {
     }
 
 
+.mud-icon-button:hover {
+    background-color: transparent;
+}
 
+
+.mud-icon-button:active {
+    background-color: transparent;
+}
