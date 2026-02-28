@@ -20,19 +20,15 @@ public sealed class AgentCallerTool
         _onRoute = onRoute;
     }
 
-
-
-
-
     public sealed record AgentCallResult(string AgentName, string Text);
 
     [Description("Calls a specialized agent and returns its final response.")]
     public async Task<AgentCallResult> CallAgentAsync(
-    [Description("The agent name to call.")] string agentName,
-    [Description("The user's latest message text.")] string userMessage,
-    [Description("Optional: comma-separated filename filter for document scenarios.")] string? filenameFilterCsv = null,
-    [Description("How many recent conversation messages to include.")] int historyWindowMessages = 10,
-    CancellationToken cancellationToken = default)
+        [Description("The agent name to call.")] string agentName,
+        [Description("The user's latest message text.")] string userMessage,
+        [Description("Optional: comma-separated filename filter for document scenarios.")] string? filenameFilterCsv = null,
+        [Description("How many recent conversation messages to include.")] int historyWindowMessages = 10,
+        CancellationToken cancellationToken = default)
     {
         _onRoute?.Invoke(agentName);
 
@@ -49,89 +45,75 @@ public sealed class AgentCallerTool
         var messages = new List<ChatMessage> { new(ChatRole.System, sys) };
         messages.AddRange(safeTranscript);
 
-        // Ensure the latest user message is present (often already present)
+        // Ensure the latest user message is present
         if (messages.LastOrDefault()?.Role != ChatRole.User)
             messages.Add(new ChatMessage(ChatRole.User, new[] { new TextContent(userMessage) }));
 
         var sb = new StringBuilder();
 
-        Console.WriteLine(">>> Starting RunStreamingAsync");
+        // Streaming updates can be delta OR cumulative depending on provider.
+        // This deduper prevents repeated blocks and double-appends.
+        var lastFull = "";
 
         await foreach (var update in agent.RunStreamingAsync(messages: messages, cancellationToken: cancellationToken))
         {
-            var appended = false;
-
-            if (update.Contents is not null && update.Contents.Count > 0)
+            var fromContents = ExtractTextFromContents(update.Contents);
+            if (!string.IsNullOrWhiteSpace(fromContents))
             {
-                foreach (var tc in update.Contents.OfType<TextContent>())
-                {
-                    if (!string.IsNullOrEmpty(tc.Text))
-                    {
-                        sb.Append(tc.Text);
-                        appended = true;
-                    }
-                }
+                AppendDelta(sb, ref lastFull, fromContents);
+                continue;
             }
 
-            // Only fallback to update.Text if no TextContent was appended
-            if (!appended && !string.IsNullOrEmpty(update.Text))
+            if (!string.IsNullOrWhiteSpace(update.Text))
             {
-                sb.Append(update.Text);
+                AppendDelta(sb, ref lastFull, update.Text);
             }
-
-            Console.WriteLine($"UPDATE: {update.GetType().FullName} TextLen={update.Text?.Length ?? 0} Contents={update.Contents?.Count ?? 0}");
         }
 
         var finalText = sb.ToString();
-
-        // Safety: never return empty (prevents NO_RESPONSE_FROM_AGENT confusion)
         if (string.IsNullOrWhiteSpace(finalText))
             finalText = "NO_RESPONSE_FROM_AGENT";
 
         return new AgentCallResult(agentName, finalText);
     }
-    //public async Task<AgentCallResult> CallAgentAsync(
-    //    [Description("The agent name to call.")] string agentName,
-    //    [Description("The user's latest message text.")] string userMessage,
-    //    [Description("Optional: comma-separated filename filter for document scenarios.")] string? filenameFilterCsv = null,
-    //    [Description("How many recent conversation messages to include.")] int historyWindowMessages = 10,
-    //    CancellationToken cancellationToken = default)
-    //{
-    //    _onRoute?.Invoke(agentName);
 
-    //    var agent = _registry.GetRequired(agentName);
+    private static string ExtractTextFromContents(IReadOnlyList<AIContent>? contents)
+    {
+        if (contents is null || contents.Count == 0) return "";
 
-    //    // IMPORTANT: Only send a SAFE text-only transcript to avoid tool_call sequencing errors
-    //    var history = _historyProvider?.Invoke() ?? Array.Empty<ChatMessage>();
-    //    var safeTranscript = ToSafeTextOnlyMessages(history, historyWindowMessages);
+        var sb = new StringBuilder();
+        foreach (var tc in contents.OfType<TextContent>())
+        {
+            if (!string.IsNullOrEmpty(tc.Text))
+                sb.Append(tc.Text);
+        }
+        return sb.ToString();
+    }
 
-    //    var sys = "You are a specialized agent. Use the conversation transcript to answer the user's latest request.";
-    //    if (!string.IsNullOrWhiteSpace(filenameFilterCsv))
-    //        sys += $"\nIf searching documents, prefer these files: {filenameFilterCsv}";
+    private static void AppendDelta(StringBuilder sb, ref string lastFull, string incoming)
+    {
+        if (!string.IsNullOrEmpty(lastFull) && incoming.StartsWith(lastFull, StringComparison.Ordinal))
+        {
+            sb.Append(incoming.AsSpan(lastFull.Length));
+            lastFull = incoming;
+            return;
+        }
 
-    //    var messages = new List<ChatMessage> { new(ChatRole.System, sys) };
-    //    messages.AddRange(safeTranscript);
+        if (incoming == lastFull) return;
 
-    //    // Ensure the latest user message is present (often already present)
-    //    if (messages.LastOrDefault()?.Role != ChatRole.User)
-    //        messages.Add(new ChatMessage(ChatRole.User, new[] { new TextContent(userMessage) }));
+        var idx = !string.IsNullOrEmpty(lastFull) ? incoming.IndexOf(lastFull, StringComparison.Ordinal) : -1;
+        if (idx >= 0)
+        {
+            var suffixStart = idx + lastFull.Length;
+            if (suffixStart < incoming.Length)
+                sb.Append(incoming.AsSpan(suffixStart));
+            lastFull = incoming;
+            return;
+        }
 
-    //    var sb = new StringBuilder();
-
-    //    Console.WriteLine(">>> Starting RunStreamingAsync");
-
-    //    // NOTE: In your SDK, update.Text can be empty while update.Contents contains TextContent.
-    //    await foreach (var update in agent.RunStreamingAsync(messages: messages, cancellationToken: cancellationToken))
-    //    {
-    //        Console.WriteLine($"UPDATE: {update.GetType().FullName} TextLen={update.Text?.Length ?? 0} Contents={update.Contents?.Count ?? 0}");
-
-    //        if (update.Contents != null)
-    //            foreach (var c in update.Contents)
-    //                Console.WriteLine($"  - content: {c.GetType().FullName}");
-    //    }
-
-    //    return new AgentCallResult(agentName, sb.ToString());
-    //}
+        sb.Append(incoming);
+        lastFull = incoming;
+    }
 
     private static List<ChatMessage> ToSafeTextOnlyMessages(IEnumerable<ChatMessage> source, int takeLast)
     {
