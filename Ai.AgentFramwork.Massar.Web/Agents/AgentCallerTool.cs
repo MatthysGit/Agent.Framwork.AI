@@ -59,30 +59,27 @@ public sealed class AgentCallerTool
 
         await foreach (var update in agent.RunStreamingAsync(messages: messages, cancellationToken: cancellationToken))
         {
-            // 1) Prefer structured contents (most reliable)
+            var appended = false;
+
             if (update.Contents is not null && update.Contents.Count > 0)
             {
-                foreach (var content in update.Contents)
+                foreach (var tc in update.Contents.OfType<TextContent>())
                 {
-                    if (content is TextContent tc && !string.IsNullOrEmpty(tc.Text))
+                    if (!string.IsNullOrEmpty(tc.Text))
                     {
                         sb.Append(tc.Text);
+                        appended = true;
                     }
                 }
             }
 
-            // 2) Fallback to update.Text (sometimes empty, sometimes populated)
-            if (!string.IsNullOrEmpty(update.Text))
+            // Only fallback to update.Text if no TextContent was appended
+            if (!appended && !string.IsNullOrEmpty(update.Text))
             {
-                // Avoid double-appending if TextContent already carried same chunk.
-                // (If you see duplication, remove this block.)
                 sb.Append(update.Text);
             }
 
             Console.WriteLine($"UPDATE: {update.GetType().FullName} TextLen={update.Text?.Length ?? 0} Contents={update.Contents?.Count ?? 0}");
-            if (update.Contents != null)
-                foreach (var c in update.Contents)
-                    Console.WriteLine($"  - content: {c.GetType().FullName}");
         }
 
         var finalText = sb.ToString();
