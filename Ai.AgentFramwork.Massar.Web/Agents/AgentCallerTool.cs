@@ -77,7 +77,7 @@ public sealed class AgentCallerTool
         return new AgentCallResult(agentName, finalText);
     }
 
-    private static string ExtractTextFromContents(IReadOnlyList<AIContent>? contents)
+    private static string ExtractTextFromContents(IList<AIContent>? contents)
     {
         if (contents is null || contents.Count == 0) return "";
 
