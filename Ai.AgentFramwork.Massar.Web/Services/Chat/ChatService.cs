@@ -3,7 +3,6 @@ using Ai.AgentFramwork.Massar.Web.DBModels;
 using Ai.AgentFramwork.Massar.Web.DTO;
 using Ai.AgentFramwork.Massar.Web.Models;
 using Ai.AgentFramwork.Massar.Web.Tools;
-using Microsoft.Agents.AI;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.EntityFrameworkCore;
@@ -23,8 +22,10 @@ public sealed class ChatService
     private readonly ChatSession _session;
     private readonly IChatConversationRepository _repo;
     private readonly ChatAttachmentStore _attachments;
-    private readonly AIAgent _orchestratorAgent;
+    private readonly Services.Chat.Pipeline.ChatPipeline _pipeline;
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
+
+    // Kept because ChatPipeline calls them, and ChatService still needs to parse/materialize doc attachments.
     private readonly DocumentSearchTool _docSearchTool;
     private readonly DocumentEditTool _docEditTool;
 
@@ -57,14 +58,20 @@ public sealed class ChatService
         _repo = repo;
         _attachments = attachments;
         _dbFactory = dbFactory;
+
         _docSearchTool = docSearchTool;
         _docEditTool = docEditTool;
 
-        _orchestratorAgent = agentFactory.BuildOrchestratorAgent(
+        // Build pipeline (AI router + deterministic execution)
+        _pipeline = agentFactory.BuildPipeline(
             tools,
             session,
             dbFactory,
-            auth);
+            auth,
+            docSearchTool,
+            docEditTool,
+            onRoute: agentName => CurrentAgentName = agentName
+        );
     }
 
     private enum DocStore
@@ -119,48 +126,6 @@ public sealed class ChatService
         {
             return false;
         }
-    }
-
-    private static bool LooksLikeDocumentQuestion(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return false;
-
-        var t = text.ToLowerInvariant();
-
-        if (t.Contains("/api/chat/attachments/") || t.Contains("/documents/files/download/"))
-            return true;
-
-        if (t.Contains(".pdf") || t.Contains(".docx") || t.Contains(".doc") || t.Contains(".txt") ||
-            t.Contains(".csv") || t.Contains(".xlsx") || t.Contains(".xls"))
-            return true;
-
-        if (t.Contains("according to") || t.Contains("in the document") || t.Contains("in the pdf") ||
-            t.Contains("from the file") || t.Contains("what is included") || t.Contains("what does it say") ||
-            t.Contains("summarize") || t.Contains("quote") || t.Contains("cite"))
-            return true;
-
-        return false;
-    }
-
-    private static bool IsDocumentEditIntent(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return false;
-
-        var t = text.ToLowerInvariant();
-
-        return t.Contains("add comment")
-               || t.Contains("add comments")
-               || t.Contains("comment on")
-               || t.Contains("review the document")
-               || t.Contains("review this document")
-               || t.Contains("review")
-               || t.Contains("annotate")
-               || t.Contains("highlight")
-               || t.Contains("track changes")
-               || t.Contains("suggest changes")
-               || t.Contains("edit the document")
-               || t.Contains("proofread")
-               || t.Contains("revise");
     }
 
     private async Task<int[]> GetRoleIdsAsync(CancellationToken ct = default)
@@ -371,6 +336,7 @@ public sealed class ChatService
 
         var conversationId = _session.ActiveConversationId!.Value;
 
+        // Save uploaded files and embed links into user text
         var userAttachments = await _attachments.SaveUploadedFilesAsync(conversationId, files, streamCt);
         var userText = _attachments.AppendAttachmentLinks(GetText(userMessage), userAttachments);
 
@@ -386,79 +352,66 @@ public sealed class ChatService
             ct: persistCt);
 
         _session.ClearAssistantAttachments();
+
+        // Create streaming placeholder
         var responseText = new TextContent("");
         var inProgress = new ChatMessage(ChatRole.Assistant, new[] { responseText });
         _session.SetStreamingMessage(inProgress);
 
         var rawUserQuery = StripMarkdownLinks(GetText(userMessage));
 
-        // ✅ PATCH: EDIT path now parses JSON + materializes attachments + appends attachment links
-        if (IsDocumentEditIntent(rawUserQuery) || IsDocumentEditIntent(userText))
+        // ---------- PIPELINE EXECUTION (replaces doc-routing + orchestrator) ----------
+        _session.ClearStreamingMessage();
+
+        // Keep a live in-progress message for UI updates
+        responseText = new TextContent("");
+        inProgress = new ChatMessage(ChatRole.Assistant, new[] { responseText });
+        _session.SetStreamingMessage(inProgress);
+
+        // Execute pipeline (router decides: doc search/edit, sql, chart, general)
+        var result = await _pipeline.ExecuteAsync(rawUserQuery, streamCt);
+
+        // Update UI once (pipeline is deterministic; can be upgraded to true streaming later)
+        responseText.Text = result.Text;
+        ChatMessageItem.NotifyChanged(inProgress);
+        yield return _session.Messages;
+
+        var rawAssistant = result.Text;
+        Console.WriteLine("RAW ASSISTANT OUTPUT:" + rawAssistant);
+
+        // ---------- Attachment JSON handling (unchanged behavior) ----------
+        // If pipeline returned DocumentSearch/DocumentEdit JSON, parse it + materialize attachments exactly as before.
+        if (TryParseDocSearchJson(rawAssistant, out var docPayload) && docPayload is not null)
         {
+            var roleIds = await GetRoleIdsAsync(persistCt);
+
+            var listObj = (object)_session.CreatedAssistantAttachments;
+            var listType = listObj.GetType();
+            var attachmentType = listType.IsGenericType
+                ? listType.GetGenericArguments()[0]
+                : throw new InvalidOperationException("CreatedAssistantAttachments must be List<T>.");
+
+            var created = await MaterializeDocSearchAttachmentsAsync(
+                attachmentType,
+                docPayload.Attachments ?? Array.Empty<DocumentAttachmentDescriptor>(),
+                roleIds,
+                persistCt);
+
+            var asIList = (IList)listObj;
+            foreach (var a in created)
+                asIList.Add(a);
+
+            var assistantTextDoc = _attachments.AppendAttachmentLinks(
+                docPayload.Text ?? string.Empty,
+                _session.CreatedAssistantAttachments);
+
+            _session.AddMessage(new ChatMessage(ChatRole.Assistant, assistantTextDoc));
             _session.ClearStreamingMessage();
-
-            var editInstruction = "add comments";
-            var lower = rawUserQuery.ToLowerInvariant();
-            if (lower.Contains("comment"))
-                editInstruction = "add comments";
-            else if (lower.Contains("annotate"))
-                editInstruction = "annotate with comments";
-            else if (lower.Contains("highlight"))
-                editInstruction = "highlight issues and add comments";
-            else if (lower.Contains("proofread"))
-                editInstruction = "proofread and add comments";
-            else if (lower.Contains("revise") || lower.Contains("edit"))
-                editInstruction = "make suggested edits and add comments";
-
-            var json = await _docEditTool.EditDocumentAsync(conversationId, rawUserQuery, editInstruction);
-
-            if (TryParseDocSearchJson(json, out var docPayload) && docPayload is not null)
-            {
-                var roleIds = await GetRoleIdsAsync(persistCt);
-
-                var listObj = (object)_session.CreatedAssistantAttachments;
-                var listType = listObj.GetType();
-                var attachmentType = listType.IsGenericType
-                    ? listType.GetGenericArguments()[0]
-                    : throw new InvalidOperationException("CreatedAssistantAttachments must be List<T>.");
-
-                var created = await MaterializeDocSearchAttachmentsAsync(
-                    attachmentType,
-                    docPayload.Attachments ?? Array.Empty<DocumentAttachmentDescriptor>(),
-                    roleIds,
-                    persistCt);
-
-                var asIList = (IList)listObj;
-                foreach (var a in created)
-                    asIList.Add(a);
-
-                var assistantText2 = _attachments.AppendAttachmentLinks(
-                    docPayload.Text ?? string.Empty,
-                    _session.CreatedAssistantAttachments);
-
-                _session.AddMessage(new ChatMessage(ChatRole.Assistant, assistantText2));
-
-                await _repo.AppendMessageAsync(
-                    conversationId,
-                    senderRole: "assistant",
-                    content: assistantText2,
-                    contentType: "text/markdown",
-                    metadataJson: null,
-                    attachments: _session.CreatedAssistantAttachments,
-                    ct: persistCt);
-
-                _chatSuggestions?.Update(_session.Messages);
-                yield return _session.Messages;
-                yield break;
-            }
-
-            var fallbackText = string.IsNullOrWhiteSpace(json) ? "No edit result returned." : json;
-            _session.AddMessage(new ChatMessage(ChatRole.Assistant, fallbackText));
 
             await _repo.AppendMessageAsync(
                 conversationId,
                 senderRole: "assistant",
-                content: fallbackText,
+                content: assistantTextDoc,
                 contentType: "text/markdown",
                 metadataJson: null,
                 attachments: _session.CreatedAssistantAttachments,
@@ -469,90 +422,12 @@ public sealed class ChatService
             yield break;
         }
 
-        // Search path unchanged
-        if (LooksLikeDocumentQuestion(userText))
-        {
-            _session.ClearStreamingMessage();
-
-            var query = rawUserQuery;
-            var json = await _docSearchTool.SearchDocumentsAsync(conversationId, query);
-
-            if (TryParseDocSearchJson(json, out var docPayload) && docPayload is not null)
-            {
-                var roleIds = await GetRoleIdsAsync(persistCt);
-
-                var listObj = (object)_session.CreatedAssistantAttachments;
-                var listType = listObj.GetType();
-                var attachmentType = listType.IsGenericType
-                    ? listType.GetGenericArguments()[0]
-                    : throw new InvalidOperationException("CreatedAssistantAttachments must be List<T>.");
-
-                var created = await MaterializeDocSearchAttachmentsAsync(
-                    attachmentType,
-                    docPayload.Attachments ?? Array.Empty<DocumentAttachmentDescriptor>(),
-                    roleIds,
-                    persistCt);
-
-                var asIList = (IList)listObj;
-                foreach (var a in created)
-                    asIList.Add(a);
-
-                var assistantText2 = _attachments.AppendAttachmentLinks(
-                    docPayload.Text ?? string.Empty,
-                    _session.CreatedAssistantAttachments);
-
-                _session.AddMessage(new ChatMessage(ChatRole.Assistant, assistantText2));
-
-                await _repo.AppendMessageAsync(
-                    conversationId,
-                    senderRole: "assistant",
-                    content: assistantText2,
-                    contentType: "text/markdown",
-                    metadataJson: null,
-                    attachments: _session.CreatedAssistantAttachments,
-                    ct: persistCt);
-
-                _chatSuggestions?.Update(_session.Messages);
-                yield return _session.Messages;
-                yield break;
-            }
-            else
-            {
-                var assistantText2 = json ?? "No relevant information found.";
-                _session.AddMessage(new ChatMessage(ChatRole.Assistant, assistantText2));
-
-                await _repo.AppendMessageAsync(
-                    conversationId,
-                    senderRole: "assistant",
-                    content: assistantText2,
-                    contentType: "text/markdown",
-                    metadataJson: null,
-                    attachments: _session.CreatedAssistantAttachments,
-                    ct: persistCt);
-
-                _chatSuggestions?.Update(_session.Messages);
-                yield return _session.Messages;
-                yield break;
-            }
-        }
-
-        // Orchestrator path unchanged
-        await foreach (var update in _orchestratorAgent.RunStreamingAsync(
-            messages: ChatMessageWindow.ToSafeTextOnlyMessages(_session.Messages, takeLast: 40),
-            cancellationToken: streamCt))
-        {
-            responseText.Text += update.Text;
-            ChatMessageItem.NotifyChanged(inProgress);
-            yield return _session.Messages;
-        }
-
-        var rawAssistant = GetText(_session.CurrentResponseMessage);
-        Console.WriteLine("RAW ASSISTANT OUTPUT:" + rawAssistant);
-
+        // Not doc JSON: treat as normal assistant output and apply attachment links (e.g., chart images)
         var assistantText = _attachments.AppendAttachmentLinks(
             rawAssistant,
             _session.CreatedAssistantAttachments);
 
+        // If chart tool produced an image attachment, ensure it's shown
         var firstImage = _session.CreatedAssistantAttachments
             .FirstOrDefault(a => a.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase));
 
@@ -575,7 +450,6 @@ public sealed class ChatService
             ct: persistCt);
 
         _chatSuggestions?.Update(_session.Messages);
-
         yield return _session.Messages;
     }
 

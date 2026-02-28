@@ -1,10 +1,12 @@
 ﻿using Ai.AgentFramwork.Massar.Web.Agents;
 using Ai.AgentFramwork.Massar.Web.DBModels;
+using Ai.AgentFramwork.Massar.Web.Services.Chat.Pipeline;
 using Ai.AgentFramwork.Massar.Web.Tools;
 using Microsoft.Agents.AI;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using OpenAI;
 using OpenAI.Chat;
@@ -33,6 +35,7 @@ public sealed class ChatAgentFactory
         _services = services;
     }
 
+    // --- OLD (optional): keep if you still want orchestrator path for comparison/tests ---
     public AIAgent BuildOrchestratorAgent(
         ChatTools tools,
         ChatSession session,
@@ -42,7 +45,6 @@ public sealed class ChatAgentFactory
         var client = new OpenAIClient(_configuration["OpenAI:Key"] ?? "");
         var chatCompletionClient = client.GetChatClient("gpt-4.1");
 
-        // Tools / deps
         var sqlServerSelectTool = new SqlServerSelectTool((IConfigurationRoot)_configuration, auth);
 
         var docSearchTool = _services.GetRequiredService<DocumentSearchTool>();
@@ -50,13 +52,11 @@ public sealed class ChatAgentFactory
 
         var docEditTool = _services.GetRequiredService<DocumentEditTool>();
 
-        // Build + Register specialized agents (each agent lives in its own class now)
         _registry.Register(SqlAgentName, new SqlAgent().Build(chatCompletionClient, SqlAgentName, sqlServerSelectTool));
         _registry.Register(LlmChatAgentName, new GeneralChatAgent().Build(chatCompletionClient, LlmChatAgentName, tools));
         _registry.Register(DocumentSearchAgentName, new DocumentSearchAgent().Build(chatCompletionClient, DocumentSearchAgentName, docSearchToolWrapper));
         _registry.Register(DocumentEditAgentName, new DocumentEditAgent().Build(chatCompletionClient, DocumentEditAgentName, docEditTool));
 
-        // Orchestrator calls agents via AgentCallerTool
         var caller = new AgentCallerTool(
             _registry,
             historyProvider: () => ChatMessageWindow.ToSafeTextOnlyMessages(session.Messages, takeLast: 40),
@@ -66,7 +66,6 @@ public sealed class ChatAgentFactory
         Task<string> GetConversationId()
             => Task.FromResult(session.ActiveConversationId?.ToString() ?? "");
 
-        // Orchestrator agent moved to its own class as well
         return new OrchestratorAgent().Build(
             chatCompletionClient,
             OrchestratorAgentName,
@@ -77,6 +76,47 @@ public sealed class ChatAgentFactory
             DocumentSearchAgentName,
             DocumentEditAgentName,
             LlmChatAgentName);
+    }
+
+    // --- NEW: Pipeline builder (AI Router + deterministic execution) ---
+    public ChatPipeline BuildPipeline(
+        ChatTools tools,
+        ChatSession session,
+        IDbContextFactory<AppDbContext> dbFactory,
+        AuthenticationStateProvider auth,
+        DocumentSearchTool docSearchTool,
+        DocumentEditTool docEditTool,
+        Action<string>? onRoute = null)
+    {
+        var client = new OpenAIClient(_configuration["OpenAI:Key"] ?? "");
+        var chatCompletionClient = client.GetChatClient("gpt-4.1");
+
+        var sqlServerSelectTool = new SqlServerSelectTool((IConfigurationRoot)_configuration, auth);
+
+        var docSearchToolWrapper = new DocumentSearchToolWrapper(docSearchTool, session);
+
+        // Register specialized agents
+        _registry.Register(SqlAgentName, new SqlAgent().Build(chatCompletionClient, SqlAgentName, sqlServerSelectTool));
+        _registry.Register(LlmChatAgentName, new GeneralChatAgent().Build(chatCompletionClient, LlmChatAgentName, tools));
+        _registry.Register(DocumentSearchAgentName, new DocumentSearchAgent().Build(chatCompletionClient, DocumentSearchAgentName, docSearchToolWrapper));
+        _registry.Register(DocumentEditAgentName, new DocumentEditAgent().Build(chatCompletionClient, DocumentEditAgentName, docEditTool));
+
+        // Shared caller for specialists
+        var caller = new AgentCallerTool(
+            _registry,
+            historyProvider: () => ChatMessageWindow.ToSafeTextOnlyMessages(session.Messages, takeLast: 40),
+            onRoute: onRoute
+        );
+
+        // AI Router (uses same chat client) + sees safe transcript too
+        var router = new Ai.AgentFramwork.Massar.Web.Agents.RouterAgent(
+            chatCompletionClient,
+            historyProvider: () => ChatMessageWindow.ToSafeTextOnlyMessages(session.Messages, takeLast: 40)
+        );
+
+        Guid GetConversationIdGuid() => session.ActiveConversationId ?? Guid.Empty;
+
+        return new ChatPipeline(router, caller, tools, docSearchTool, docEditTool, GetConversationIdGuid);
     }
 
     [Description("Get the current date and time")]
