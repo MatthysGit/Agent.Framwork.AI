@@ -52,14 +52,14 @@ public sealed class RouterAgent
         var transcript = string.Join("\n", last);
 
         // IMPORTANT: use $$""" so JSON braces are treated as literal content
-        var system = $$"""
+        var system = $$$"""
 You are the ROUTER only. Do NOT call tools. Do NOT answer the user.
 Return ONLY strict JSON.
 
 Schema (return exactly this shape):
 {
   "mode": "agent" | "chart",
-  "agent": "{{ChatAgentFactory.SqlAgentName}}" | "{{ChatAgentFactory.DocumentSearchAgentName}}" | "{{ChatAgentFactory.DocumentEditAgentName}}" | "{{ChatAgentFactory.LlmChatAgentName}}",
+  "agent": "{{{ChatAgentFactory.SqlAgentName}}}" | "{{{ChatAgentFactory.DocumentSearchAgentName}}}" | "{{{ChatAgentFactory.DocumentEditAgentName}}}" | "{{{ChatAgentFactory.LlmChatAgentName}}}",
   "reason": "<short reason>",
   "chartType": "bar"|"pie"|"line"|"area"|"donut"|"gauge"|"progress"|"multicolumn"|null
 }
@@ -68,11 +68,11 @@ ABSOLUTE DOCUMENT ROUTING RULES (MUST FOLLOW):
 
 A) DOCUMENT EDIT INTENT (HIGHEST PRIORITY):
 - If the user requests to edit/review/comment/annotate/highlight/suggest changes/track changes/rewrite/fix grammar/modify a document,
-  choose agent "{{ChatAgentFactory.DocumentEditAgentName}}".
+  choose agent "{{{ChatAgentFactory.DocumentEditAgentName}}}".
 
 B) DOCUMENT SEARCH / LOOKUP INTENT (ONLY IF NOT EDITING):
 - If the user's message OR recent chat context indicates they want information contained in a document (policy/contract/agreement/kit),
-  you MUST choose agent "{{ChatAgentFactory.DocumentSearchAgentName}}".
+  you MUST choose agent "{{{ChatAgentFactory.DocumentSearchAgentName}}}".
   This includes questions like:
   - "what is included in the survival kit"
   - "what is included in the policy"
@@ -81,20 +81,26 @@ B) DOCUMENT SEARCH / LOOKUP INTENT (ONLY IF NOT EDITING):
   - "what does the document say about ..."
   - "summarize the policy/contract"
   - "according to the document/policy/contract ..."
-- Also choose "{{ChatAgentFactory.DocumentSearchAgentName}}" if the message OR recent chat context contains ANY of:
+- Also choose "{{{ChatAgentFactory.DocumentSearchAgentName}}}" if the message OR recent chat context contains ANY of:
   - '/api/chat/attachments/' or '/documents/files/download/'
   - pdf, doc, docx, txt, csv, xls, xlsx
   - 'according to', 'in the document', 'in the pdf', 'from the file', 'what does it say', 'summarize', 'quote', 'cite'
 
 CHART RULE:
 - If user asks for a chart/plot/graph AND it requires ANY SQL/database query:
-  mode="chart", agent="{{ChatAgentFactory.SqlAgentName}}", chartType best fit.
+  mode="chart", agent="{{{ChatAgentFactory.SqlAgentName}}}", chartType best fit.
 
 SQL RULE:
-- If clearly SQL/database (not chart) => agent "{{ChatAgentFactory.SqlAgentName}}".
+- If clearly SQL/database (not chart) => agent "{{{ChatAgentFactory.SqlAgentName}}}".
 
+SQL INTENT KEYWORDS (ROUTE TO SQL AGENT):
+- If the user asks for: count / how many / number of / total / sum / avg / average / min / max
+- Or asks for: breakdown / grouped by / per / by <dimension>
+- Or mentions database/query/select/sql/table/view
+- Or asks about business metrics like: employees, headcount, sales, revenue, orders, invoices, territories
+=> choose agent "{{ChatAgentFactory.SqlAgentName}}" (mode="agent" unless chart requested).
 FALLBACK:
-- Otherwise => agent "{{ChatAgentFactory.LlmChatAgentName}}".
+- Otherwise => agent "{{{ChatAgentFactory.LlmChatAgentName}}}".
 
 Return ONLY JSON. No markdown. No extra keys.
 """;
