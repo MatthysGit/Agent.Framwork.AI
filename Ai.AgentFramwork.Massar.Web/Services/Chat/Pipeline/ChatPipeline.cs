@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System.Text;
+using System.Text.Json;
 using Ai.AgentFramwork.Massar.Web.Agents;
 using Ai.AgentFramwork.Massar.Web.Services.Chat;
 using Ai.AgentFramwork.Massar.Web.Tools;
@@ -34,13 +35,23 @@ public sealed class ChatPipeline
 
     public async Task<PipelineResult> ExecuteAsync(string userText, CancellationToken ct = default)
     {
+        var swTotal = System.Diagnostics.Stopwatch.StartNew();
+        var swRoute = System.Diagnostics.Stopwatch.StartNew();
+
         var r = await _router.RouteAsync(userText, ct);
+
+        swRoute.Stop();
+        Console.WriteLine(
+            $"[ROUTER] mode={r.Mode} agent={r.Agent} chartType={r.ChartType ?? "null"} " +
+            $"reason=\"{r.Reason}\" routeMs={swRoute.ElapsedMilliseconds}");
 
         // Document search/edit are executed via tools so your attachment JSON stays identical.
         if (r.Agent.Equals(ChatAgentFactory.DocumentSearchAgentName, StringComparison.OrdinalIgnoreCase))
         {
             var convoId = _getConversationId();
             var json = await _docSearchTool.SearchDocumentsAsync(convoId, userText);
+            swTotal.Stop();
+            Console.WriteLine($"[PIPELINE] done agent={r.Agent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
             return new PipelineResult(json ?? "No relevant information found.", r.Agent, r.Reason);
         }
 
@@ -49,26 +60,156 @@ public sealed class ChatPipeline
             var convoId = _getConversationId();
             var instruction = InferEditInstruction(userText);
             var json = await _docEditTool.EditDocumentAsync(convoId, userText, instruction);
+            swTotal.Stop();
+            Console.WriteLine($"[PIPELINE] done agent={r.Agent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
             return new PipelineResult(json ?? "No edit result returned.", r.Agent, r.Reason);
         }
 
         // Chart path: SQL -> parse JSON -> chart tool -> markdown image only
+        // With automatic fallback: if chart validation fails -> ask SQL agent for a table JSON -> render markdown table
         if (r.Mode.Equals("chart", StringComparison.OrdinalIgnoreCase))
         {
-            var sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, userText, cancellationToken: ct);
+            // ✅ HARD ENFORCEMENT: Always wrap the SQL call so output is strict schema
+            var desired = string.IsNullOrWhiteSpace(r.ChartType) ? "column" : r.ChartType!.Trim().ToLowerInvariant();
+            // Router returns "bar" etc; our enforced schema uses "column" which we normalize -> bar
+            if (desired == "bar") desired = "column";
+
+            var sqlPrompt =
+                "You are the SQL agent. The user wants a CHART.\n\n" +
+                "Return ONLY strict JSON (no markdown, no prose, no code fences).\n" +
+                "Use EXACTLY this schema (all fields required):\n\n" +
+                string.Format(@"
+{{
+  ""chartType"": ""{0}"",
+  ""title"": ""<short title>"",
+  ""xAxis"": {{
+    ""title"": ""<x axis title>"",
+    ""categories"": [""A"",""B"",""C""]
+  }},
+  ""yAxis"": {{
+    ""title"": ""<y axis title>""
+  }},
+  ""series"": [
+    {{
+      ""name"": ""<series name>"",
+      ""data"": [1,2,3]
+    }}
+  ]
+}}
+
+Rules:
+- categories length MUST equal each series[i].data length
+- series[].data values MUST be numbers (not strings)
+- If no data, return:
+{{
+  ""chartType"": ""column"",
+  ""title"": ""No data"",
+  ""xAxis"": {{ ""title"": """", ""categories"": [""No data""] }},
+  ""yAxis"": {{ ""title"": """" }},
+  ""series"": [{{ ""name"": ""No data"", ""data"": [0] }}]
+}}
+
+User request:
+{1}
+", desired, userText);
+
+            var sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, sqlPrompt, cancellationToken: ct);
 
             Console.WriteLine("SQL_AGENT_RAW_FOR_CHART:\n" + sql.Text);
 
-            var chart = ParseChartJson(sql.Text);
-            Console.WriteLine($"CHART_PARSED: type={chart.ChartType}, labels={(chart.Labels?.Count ?? 0)}, values={(chart.Values?.Count ?? 0)}, series={(chart.Series?.Count ?? 0)}");
+            // ✅ Strip markdown / extra text drift and keep the JSON object
+            var jsonOnly = ExtractFirstJsonObject(sql.Text) ?? sql.Text;
 
-            var url = await CreateChartAsync(chart);
-            return new PipelineResult($"![chart]({url})", ChatAgentFactory.SqlAgentName, r.Reason);
+            try
+            {
+                var chart = ParseChartJson(jsonOnly);
+                Console.WriteLine($"CHART_PARSED: type={chart.ChartType}, labels={(chart.Labels?.Count ?? 0)}, values={(chart.Values?.Count ?? 0)}, series={(chart.Series?.Count ?? 0)}");
+
+                var url = await CreateChartAsync(chart);
+
+                swTotal.Stop();
+                Console.WriteLine($"[PIPELINE] done agent={ChatAgentFactory.SqlAgentName} mode=chart totalMs={swTotal.ElapsedMilliseconds}");
+
+                return new PipelineResult($"![chart]({url})", ChatAgentFactory.SqlAgentName, r.Reason);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[CHART_FALLBACK] Chart failed: " + ex);
+
+                var tablePrompt = string.Format(@"
+The user asked for a chart, but chart rendering failed.
+
+Return ONLY JSON in this schema (no markdown, no prose):
+{{
+  ""title"": ""<short title>"",
+  ""columns"": [""Col1"",""Col2""],
+  ""rows"": [
+    [""A"",""1""],
+    [""B"",""2""]
+  ]
+}}
+
+User request:
+{0}
+", userText);
+
+                var tableJson = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, tablePrompt, cancellationToken: ct);
+
+                var tableJsonOnly = ExtractFirstJsonObject(tableJson.Text) ?? tableJson.Text;
+
+                var fallbackMd = TryRenderTableMarkdown(tableJsonOnly, out var tableMd)
+                    ? tableMd
+                    : $"Chart generation failed and table fallback could not be generated.\n\nError: {ex.Message}";
+
+                // Run PPI on fallback markdown (helps catch number inflation + safety)
+                var ppiPrompt = $"""
+USER:
+{userText}
+
+DRAFT ANSWER:
+{fallbackMd}
+
+Return the final answer text only.
+""";
+
+                var checkedFallback = await _caller.CallAgentAsync(ChatAgentFactory.PpiAgentName, ppiPrompt, cancellationToken: ct);
+
+                swTotal.Stop();
+                Console.WriteLine($"[PIPELINE] done agent={ChatAgentFactory.SqlAgentName} mode=chart-fallback totalMs={swTotal.ElapsedMilliseconds}");
+
+                return new PipelineResult(checkedFallback.Text, ChatAgentFactory.SqlAgentName, $"{r.Reason} (chart->table fallback)");
+            }
         }
 
         // Default: call chosen agent
         var call = await _caller.CallAgentAsync(r.Agent, userText, cancellationToken: ct);
-        return new PipelineResult(call.Text, call.AgentName, r.Reason);
+
+        // Skip PPI for doc tools that must return JSON unchanged
+        if (r.Agent.Equals(ChatAgentFactory.DocumentSearchAgentName, StringComparison.OrdinalIgnoreCase) ||
+            r.Agent.Equals(ChatAgentFactory.DocumentEditAgentName, StringComparison.OrdinalIgnoreCase))
+        {
+            swTotal.Stop();
+            Console.WriteLine($"[PIPELINE] done agent={call.AgentName} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
+            return new PipelineResult(call.Text, call.AgentName, r.Reason);
+        }
+
+        // Run PPI
+        var ppiPromptNormal = $"""
+USER:
+{userText}
+
+DRAFT ANSWER:
+{call.Text}
+
+Return the final answer text only.
+""";
+
+        var checkedAnswer = await _caller.CallAgentAsync(ChatAgentFactory.PpiAgentName, ppiPromptNormal, cancellationToken: ct);
+
+        swTotal.Stop();
+        Console.WriteLine($"[PIPELINE] done agent={call.AgentName} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
+
+        return new PipelineResult(checkedAnswer.Text, call.AgentName, r.Reason);
     }
 
     private static string InferEditInstruction(string userText)
@@ -82,11 +223,39 @@ public sealed class ChatPipeline
         return "add comments";
     }
 
+    // ✅ Extract the first {...} JSON object (handles code fences / extra prose)
+    private static string? ExtractFirstJsonObject(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+
+        var s = text.Trim();
+
+        // remove common code fences
+        s = s.Replace("```json", "", StringComparison.OrdinalIgnoreCase)
+             .Replace("```", "");
+
+        var start = s.IndexOf('{');
+        if (start < 0) return null;
+
+        var depth = 0;
+        for (int i = start; i < s.Length; i++)
+        {
+            if (s[i] == '{') depth++;
+            else if (s[i] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                    return s.Substring(start, i - start + 1);
+            }
+        }
+
+        return null;
+    }
+
     // Chart JSON schema support (native schema + SQL-agent schema normalization)
     private static ChartPayload ParseChartJson(string json)
     {
         // 1) Try direct deserialize into our expected payload.
-        // IMPORTANT: Only accept if it contains renderable data; otherwise fall through to normalization.
         try
         {
             var direct = JsonSerializer.Deserialize<ChartPayload>(json, new JsonSerializerOptions
@@ -118,7 +287,7 @@ public sealed class ChatPipeline
             // fall through
         }
 
-        // 2) Normalize SQL-agent schema (xis/xAxis.categories + series.data/values), case-insensitive property names.
+        // 2) Normalize SQL-agent schema (xAxis/xis.categories + series.data), case-insensitive property names.
         try
         {
             using var doc = JsonDocument.Parse(json);
@@ -134,12 +303,11 @@ public sealed class ChatPipeline
             if (TryGetPropIgnoreCase(root, "title", out var titleEl) && titleEl.ValueKind == JsonValueKind.String)
                 title = titleEl.GetString() ?? "Chart";
 
-            // x categories may be under "xAxis" OR "xis"
+            // xAxis or xis
             JsonElement xObj = default;
             if (!(TryGetPropIgnoreCase(root, "xAxis", out xObj) || TryGetPropIgnoreCase(root, "xis", out xObj)))
                 xObj = default;
 
-            // labels
             var labels = new List<string>();
             if (xObj.ValueKind == JsonValueKind.Object &&
                 TryGetPropIgnoreCase(xObj, "categories", out var catsEl) &&
@@ -149,7 +317,6 @@ public sealed class ChatPipeline
                     labels.Add(c.GetString() ?? "");
             }
 
-            // x axis title
             var xAxisLabel = "";
             if (xObj.ValueKind == JsonValueKind.Object &&
                 TryGetPropIgnoreCase(xObj, "title", out var xt) &&
@@ -158,15 +325,13 @@ public sealed class ChatPipeline
                 xAxisLabel = xt.GetString() ?? "";
             }
 
-            // y axis title
             var yAxisLabel = "";
             if (TryGetPropIgnoreCase(root, "yAxis", out var yEl) && yEl.ValueKind == JsonValueKind.Object &&
-                TryGetPropIgnoreCase(yEl, "title", out var yt) && yt.ValueKind == JsonValueKind.String)
+                TryGetPropIgnoreCase(yEl, "title", out var yt))
             {
-                yAxisLabel = yt.GetString() ?? "";
+                yAxisLabel = yt.ValueKind == JsonValueKind.String ? (yt.GetString() ?? "") : yt.ToString();
             }
 
-            // series
             var seriesList = new List<ChartSeries>();
             if (TryGetPropIgnoreCase(root, "series", out var sEl) && sEl.ValueKind == JsonValueKind.Array)
             {
@@ -176,7 +341,7 @@ public sealed class ChatPipeline
                     if (TryGetPropIgnoreCase(s, "name", out var nEl) && nEl.ValueKind == JsonValueKind.String)
                         name = nEl.GetString() ?? "Series";
 
-                    // values may be "data" OR "values"
+                    // data preferred, values fallback
                     JsonElement dataEl = default;
                     if (!(TryGetPropIgnoreCase(s, "data", out dataEl) || TryGetPropIgnoreCase(s, "values", out dataEl)))
                         dataEl = default;
@@ -185,15 +350,18 @@ public sealed class ChatPipeline
                     if (dataEl.ValueKind == JsonValueKind.Array)
                     {
                         foreach (var v in dataEl.EnumerateArray())
+                        {
                             if (v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d))
                                 vals.Add(d);
+                            else if (v.ValueKind == JsonValueKind.String && double.TryParse(v.GetString(), out var ds))
+                                vals.Add(ds);
+                        }
                     }
 
                     seriesList.Add(new ChartSeries { Name = name, Values = vals });
                 }
             }
 
-            // If multiple series -> multicolumn; else single-series chart
             if (seriesList.Count > 1)
             {
                 return new ChartPayload
@@ -251,8 +419,6 @@ public sealed class ChatPipeline
     private static string NormalizeChartType(string? t)
     {
         var s = (t ?? "").Trim().ToLowerInvariant();
-
-        // SQL often returns "column" but your tool maps it to bar/column chart rendering
         return s switch
         {
             "column" => "bar",
@@ -291,7 +457,6 @@ public sealed class ChatPipeline
         var labels = (p.Labels ?? new List<string>()).ToArray();
         var values = (p.Values ?? new List<double>()).ToArray();
 
-        // Validate or throw with a useful message (prevents "blank chart" silently)
         if (!t.Equals("multicolumn", StringComparison.OrdinalIgnoreCase) &&
             !t.Equals("gauge", StringComparison.OrdinalIgnoreCase))
         {
@@ -379,6 +544,55 @@ public sealed class ChatPipeline
             seriesValues,
             width: 900,
             height: 500);
+    }
+
+    private static bool TryRenderTableMarkdown(string json, out string markdown)
+    {
+        markdown = "";
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            string? title = null;
+            if (TryGetPropIgnoreCase(root, "title", out var tEl) && tEl.ValueKind == JsonValueKind.String)
+                title = tEl.GetString();
+
+            if (!TryGetPropIgnoreCase(root, "columns", out var colsEl) || colsEl.ValueKind != JsonValueKind.Array)
+                return false;
+
+            if (!TryGetPropIgnoreCase(root, "rows", out var rowsEl) || rowsEl.ValueKind != JsonValueKind.Array)
+                return false;
+
+            var cols = colsEl.EnumerateArray().Select(c => c.GetString() ?? c.ToString()).ToArray();
+            if (cols.Length == 0) return false;
+
+            var sb = new StringBuilder();
+            if (!string.IsNullOrWhiteSpace(title))
+                sb.AppendLine($"**{title}**\n");
+
+            sb.AppendLine("| " + string.Join(" | ", cols) + " |");
+            sb.AppendLine("| " + string.Join(" | ", cols.Select(_ => "---")) + " |");
+
+            foreach (var rowEl in rowsEl.EnumerateArray())
+            {
+                if (rowEl.ValueKind != JsonValueKind.Array) continue;
+                var row = rowEl.EnumerateArray().Select(c => c.GetString() ?? c.ToString()).ToArray();
+
+                var cells = row.Length < cols.Length
+                    ? row.Concat(Enumerable.Repeat("", cols.Length - row.Length)).ToArray()
+                    : row.Take(cols.Length).ToArray();
+
+                sb.AppendLine("| " + string.Join(" | ", cells) + " |");
+            }
+
+            markdown = sb.ToString();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string Cap(string s)

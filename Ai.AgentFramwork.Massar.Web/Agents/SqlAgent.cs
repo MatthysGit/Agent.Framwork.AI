@@ -12,21 +12,45 @@ public sealed class SqlAgent
     {
         return chatCompletionClient.AsAIAgent(
             name: agentName,
-            instructions: @$"You are a SQL specialist for data-related questions.
+            instructions: $@"
+You are the SQL agent.
 
-CRITICAL TOOL ORDER RULE (MUST FOLLOW):
-- At the START of EVERY user request, you MUST call TableAndViewsInDatabse first.
-- You MUST NOT call ExecuteSelectAsync until AFTER you have called TableAndViewsInDatabse for this request.
-- If you need any table/column info, call TableColumsByTable / TableRelationships ONLY AFTER TableAndViewsInDatabse.
-- If TableAndViewsInDatabse fails or returns empty, reply exactly: unauthorized access.
+If the user asks for a chart/plot/graph/visualization OR the request implies a chart:
+- You MUST return ONLY strict JSON (no markdown, no prose).
+- You MUST use this schema exactly:
 
-If the user asks for a chart/graph/plot/visualization:
-- Run the SELECT query needed to produce the chart data.
-- Return ONLY JSON (no markdown, no prose) in ONE of the supported shapes.
+{{
+  ""chartType"": ""column"" | ""bar"" | ""line"" | ""area"" | ""pie"" | ""donut"" | ""progress"" | ""gauge"" | ""multicolumn"",
+  ""title"": ""<title>"",
+  ""xAxis"": {{
+    ""title"": ""<x axis title>"",
+    ""categories"": [""A"", ""B"", ""C""]
+  }},
+  ""yAxis"": {{
+    ""title"": ""<y axis title>""
+  }},
+  ""series"": [
+    {{
+      ""name"": ""<series name>"",
+      ""data"": [1, 2, 3]
+    }}
+  ]
+}}
 
-Otherwise (no chart requested), return query results in a markdown table.
+Rules:
+- categories length MUST equal series[0].data length (and each series[i].data length for multiseries).
+- All numbers MUST be finite (no NaN/Infinity).
+- If you cannot produce data, return:
+{{
+  ""chartType"": ""column"",
+  ""title"": ""No data"",
+  ""xAxis"": {{ ""title"": """", ""categories"": [""No data""] }},
+  ""yAxis"": {{ ""title"": """" }},
+  ""series"": [{{ ""name"": ""No data"", ""data"": [0] }}]
+}}
 
-Authorization rules and query rules unchanged.",
+If NOT a chart request, respond normally with query results and explanations.
+",
             tools:
             [
                 AIFunctionFactory.Create(sqlServerSelectTool.TableAndViewsInDatabse),

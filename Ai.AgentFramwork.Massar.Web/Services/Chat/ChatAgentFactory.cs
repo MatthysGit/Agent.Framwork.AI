@@ -23,7 +23,8 @@ public sealed class ChatAgentFactory
     public const string LlmChatAgentName = "LlmChatAgent";
     public const string DocumentEditAgentName = "DocumentEditAgent";
     public const string OrchestratorAgentName = "OrchestratorAgent";
-
+    public const string PpiAgentName = "PpiAgent";
+    
     private readonly IConfiguration _configuration;
     private readonly IAgentRegistry _registry;
     private readonly IServiceProvider _services;
@@ -56,7 +57,8 @@ public sealed class ChatAgentFactory
         _registry.Register(LlmChatAgentName, new GeneralChatAgent().Build(chatCompletionClient, LlmChatAgentName, tools));
         _registry.Register(DocumentSearchAgentName, new DocumentSearchAgent().Build(chatCompletionClient, DocumentSearchAgentName, docSearchToolWrapper));
         _registry.Register(DocumentEditAgentName, new DocumentEditAgent().Build(chatCompletionClient, DocumentEditAgentName, docEditTool));
-
+        _registry.Register(PpiAgentName, new PpiAgent().Build(chatCompletionClient, PpiAgentName));
+        
         var caller = new AgentCallerTool(
             _registry,
             historyProvider: () => ChatMessageWindow.ToSafeTextOnlyMessages(session.Messages, takeLast: 40),
@@ -100,7 +102,8 @@ public sealed class ChatAgentFactory
         _registry.Register(LlmChatAgentName, new GeneralChatAgent().Build(chatCompletionClient, LlmChatAgentName, tools));
         _registry.Register(DocumentSearchAgentName, new DocumentSearchAgent().Build(chatCompletionClient, DocumentSearchAgentName, docSearchToolWrapper));
         _registry.Register(DocumentEditAgentName, new DocumentEditAgent().Build(chatCompletionClient, DocumentEditAgentName, docEditTool));
-
+        _registry.Register(PpiAgentName, new PpiAgent().Build(chatCompletionClient, PpiAgentName));
+        
         // Shared caller for specialists
         var caller = new AgentCallerTool(
             _registry,
