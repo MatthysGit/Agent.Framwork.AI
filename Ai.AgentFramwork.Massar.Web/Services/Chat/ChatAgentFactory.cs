@@ -118,14 +118,47 @@ public sealed class ChatAgentFactory
         );
 
         Guid GetConversationIdGuid() => session.ActiveConversationId ?? Guid.Empty;
-
-        return new ChatPipeline(router, caller, tools, docSearchTool, docEditTool, GetConversationIdGuid);
+        //IsPrivilegedAsync
+        Task<bool> IsRole3Async() => IsPrivilegedAsync(auth);
+        
+        return new ChatPipeline(router, caller, tools, docSearchTool, docEditTool, GetConversationIdGuid, canViewCompensationAsync: () => IsRole3Async(), isPrivilegedAsync: () => IsRole3Async());
     }
+
+    private static async Task<bool> IsPrivilegedAsync(AuthenticationStateProvider auth)
+    {
+        var state = await auth.GetAuthenticationStateAsync();
+        var user = state.User;
+
+        var roleIds = user.Claims
+            .Where(c => c.Type is "roleId" or "RoleId" or System.Security.Claims.ClaimTypes.Role)
+            .Select(c => c.Value)
+            .Select(v => int.TryParse(v, out var i) ? (int?)i : null)
+            .Where(i => i != null)
+            .Select(i => i!.Value)
+            .Distinct()
+            .ToArray();
+
+        return roleIds.Contains(3);
+    }
+    
+
+    private static async Task<bool> CanViewCompensationAsync(AuthenticationStateProvider auth)
+    {
+        var state = await auth.GetAuthenticationStateAsync();
+        var user = state.User;
+
+        // Adjust to your real claims/roles:
+        // Example: role claim contains "HR" or "Payroll"
+        return user.IsInRole("HR") || user.IsInRole("Payroll") ||
+               user.Claims.Any(c => c.Type == "permission" && c.Value.Equals("compensation.read", StringComparison.OrdinalIgnoreCase));
+    }
+    
 
     [Description("Get the current date and time")]
     private static Task<string> GetCurrentTime()
         => Task.FromResult(DateTime.Now.ToString());
 }
+
 
 /// <summary>Small helper to keep the safe-window logic out of ChatService.</summary>
 internal static class ChatMessageWindow
@@ -153,4 +186,7 @@ internal static class ChatMessageWindow
 
         return safe;
     }
+
+ 
+    
 }
