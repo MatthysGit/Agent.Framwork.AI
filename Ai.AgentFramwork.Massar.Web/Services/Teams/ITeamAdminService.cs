@@ -15,8 +15,8 @@ public interface ITeamAdminService
     // Roles catalog
     Task<IReadOnlyList<Role>> SearchRolesAsync(string? search, int take = 20, CancellationToken ct = default);
     Task<Role?> GetRoleAsync(int roleId, CancellationToken ct = default);
-    Task<int> CreateRoleAsync(string name, bool isActive, CancellationToken ct = default);
-    Task UpdateRoleAsync(int roleId, string name, bool isActive, CancellationToken ct = default);
+    Task<int> CreateRoleAsync(string name, bool isActive, bool privilegedPpi, CancellationToken ct = default);
+    Task UpdateRoleAsync(int roleId, string name, bool isActive, bool privilegedPpi, CancellationToken ct = default);
     Task<TeamRole?> GetTeamRoleAsync(int teamRoleId, CancellationToken ct = default);
     // TeamRole links
     Task<IReadOnlyList<TeamRole>> GetTeamRolesAsync(CancellationToken ct = default);

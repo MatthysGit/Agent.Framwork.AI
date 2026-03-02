@@ -59,6 +59,18 @@
                     </CellTemplate>
                 </TemplateColumn>
 
+                <!-- NEW: Privileged PPI (display only for now; persistence requires service patch) -->
+                <TemplateColumn T="Role" Title="Privileged PPI" Style="width:140px;">
+                    <CellTemplate Context="ctx">
+                        <MudSwitch T="bool"
+                                   Size="Size.Small"
+                                   Dense="true"
+                                   Value="ctx.Item.PrivilegedPPI ?? false"
+                                   ValueChanged="async v => await ToggleRolePrivilegedPpiAsync(ctx.Item.RoleId, v)"
+                                   Color="Color.Info" />
+                    </CellTemplate>
+                </TemplateColumn>
+
                 <TemplateColumn T="Role" Title="Created" Style="width:120px;">
                     <CellTemplate Context="ctx">
                         @ctx.Item.CreatedOn.ToString("yyyy-MM-dd")
@@ -118,6 +130,8 @@
                      .Contains(_search, StringComparison.OrdinalIgnoreCase)
                 || (r.IsActive ? "active" : "inactive")
                      .Contains(_search, StringComparison.OrdinalIgnoreCase)
+                || ((r.PrivilegedPPI ?? false) ? "privileged" : "not privileged")
+                     .Contains(_search, StringComparison.OrdinalIgnoreCase)
             );
 
     private async Task AddRoleAsync()
@@ -129,6 +143,26 @@
 
         if (!(await dlg.Result)?.Canceled ?? false)
             await ReloadAsync();
+    }
+
+    private async Task ToggleRolePrivilegedPpiAsync(int roleId, bool privilegedPpi)
+    {
+        try
+        {
+            var role = await TeamService.GetRoleAsync(roleId);
+            if (role is null) return;
+
+            await TeamService.UpdateRoleAsync(roleId, role.Name, role.IsActive, privilegedPpi, default);
+            Snackbar.Add("Role updated.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.GetBaseException().Message, Severity.Error);
+        }
+        finally
+        {
+            await ReloadAsync();
+        }
     }
 
     private async Task EditRoleAsync(int roleId)
@@ -149,7 +183,7 @@
             var role = await TeamService.GetRoleAsync(roleId);
             if (role is null) return;
 
-            await TeamService.UpdateRoleAsync(roleId, role.Name, isActive);
+            await TeamService.UpdateRoleAsync(roleId, role.Name, isActive, role.PrivilegedPPI ?? false, default);
             Snackbar.Add("Role updated.", Severity.Success);
         }
         catch (Exception ex)

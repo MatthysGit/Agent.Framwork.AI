@@ -24,60 +24,22 @@ public sealed class ChatAgentFactory
     public const string DocumentEditAgentName = "DocumentEditAgent";
     public const string OrchestratorAgentName = "OrchestratorAgent";
     public const string PpiAgentName = "PpiAgent";
-    
+
+    private readonly IDbContextFactory<AppDbContext> _dbFactory;
     private readonly IConfiguration _configuration;
     private readonly IAgentRegistry _registry;
     private readonly IServiceProvider _services;
 
-    public ChatAgentFactory(IConfiguration configuration, IAgentRegistry registry, IServiceProvider services)
+    public ChatAgentFactory(
+        IConfiguration configuration,
+        IAgentRegistry registry,
+        IServiceProvider services,
+        IDbContextFactory<AppDbContext> dbFactory)
     {
         _configuration = configuration;
         _registry = registry;
         _services = services;
-    }
-
-    // --- OLD (optional): keep if you still want orchestrator path for comparison/tests ---
-    public AIAgent BuildOrchestratorAgent(
-        ChatTools tools,
-        ChatSession session,
-        IDbContextFactory<AppDbContext> dbFactory,
-        AuthenticationStateProvider auth)
-    {
-        var client = new OpenAIClient(_configuration["OpenAI:Key"] ?? "");
-        var chatCompletionClient = client.GetChatClient("gpt-4.1");
-
-        var sqlServerSelectTool = new SqlServerSelectTool((IConfigurationRoot)_configuration, auth);
-
-        var docSearchTool = _services.GetRequiredService<DocumentSearchTool>();
-        var docSearchToolWrapper = new DocumentSearchToolWrapper(docSearchTool, session);
-
-        var docEditTool = _services.GetRequiredService<DocumentEditTool>();
-
-        _registry.Register(SqlAgentName, new SqlAgent().Build(chatCompletionClient, SqlAgentName, sqlServerSelectTool));
-        _registry.Register(LlmChatAgentName, new GeneralChatAgent().Build(chatCompletionClient, LlmChatAgentName, tools));
-        _registry.Register(DocumentSearchAgentName, new DocumentSearchAgent().Build(chatCompletionClient, DocumentSearchAgentName, docSearchToolWrapper));
-        _registry.Register(DocumentEditAgentName, new DocumentEditAgent().Build(chatCompletionClient, DocumentEditAgentName, docEditTool));
-        _registry.Register(PpiAgentName, new PpiAgent().Build(chatCompletionClient, PpiAgentName));
-        
-        var caller = new AgentCallerTool(
-            _registry,
-            historyProvider: () => ChatMessageWindow.ToSafeTextOnlyMessages(session.Messages, takeLast: 40),
-            onRoute: route => Console.WriteLine($"[OrchestratorRoute] {route}")
-        );
-
-        Task<string> GetConversationId()
-            => Task.FromResult(session.ActiveConversationId?.ToString() ?? "");
-
-        return new OrchestratorAgent().Build(
-            chatCompletionClient,
-            OrchestratorAgentName,
-            caller,
-            tools,
-            GetConversationId,
-            SqlAgentName,
-            DocumentSearchAgentName,
-            DocumentEditAgentName,
-            LlmChatAgentName);
+        _dbFactory = dbFactory; // ✅ FIXED
     }
 
     // --- NEW: Pipeline builder (AI Router + deterministic execution) ---
@@ -94,7 +56,6 @@ public sealed class ChatAgentFactory
         var chatCompletionClient = client.GetChatClient("gpt-4.1");
 
         var sqlServerSelectTool = new SqlServerSelectTool((IConfigurationRoot)_configuration, auth);
-
         var docSearchToolWrapper = new DocumentSearchToolWrapper(docSearchTool, session);
 
         // Register specialized agents
@@ -103,32 +64,43 @@ public sealed class ChatAgentFactory
         _registry.Register(DocumentSearchAgentName, new DocumentSearchAgent().Build(chatCompletionClient, DocumentSearchAgentName, docSearchToolWrapper));
         _registry.Register(DocumentEditAgentName, new DocumentEditAgent().Build(chatCompletionClient, DocumentEditAgentName, docEditTool));
         _registry.Register(PpiAgentName, new PpiAgent().Build(chatCompletionClient, PpiAgentName));
-        
-        // Shared caller for specialists
+
         var caller = new AgentCallerTool(
             _registry,
             historyProvider: () => ChatMessageWindow.ToSafeTextOnlyMessages(session.Messages, takeLast: 40),
             onRoute: onRoute
         );
 
-        // AI Router (uses same chat client) + sees safe transcript too
         var router = new Ai.AgentFramwork.Massar.Web.Agents.RouterAgent(
             chatCompletionClient,
             historyProvider: () => ChatMessageWindow.ToSafeTextOnlyMessages(session.Messages, takeLast: 40)
         );
 
         Guid GetConversationIdGuid() => session.ActiveConversationId ?? Guid.Empty;
-        //IsPrivilegedAsync
-        Task<bool> IsRole3Async() => IsPrivilegedAsync(auth);
-        
-        return new ChatPipeline(router, caller, tools, docSearchTool, docEditTool, GetConversationIdGuid, canViewCompensationAsync: () => IsRole3Async(), isPrivilegedAsync: () => IsRole3Async());
+
+        Task<bool> IsPrivileged() => IsPrivilegedAsync(auth, _dbFactory);
+
+        return new ChatPipeline(
+            router,
+            caller,
+            tools,
+            docSearchTool,
+            docEditTool,
+            GetConversationIdGuid,
+            canViewCompensationAsync: () => IsPrivileged(),
+            isPrivilegedAsync: () => IsPrivileged()
+        );
     }
 
-    private static async Task<bool> IsPrivilegedAsync(AuthenticationStateProvider auth)
+    // ✅ NEW EF-BACKED PRIVILEGE CHECK
+    private static async Task<bool> IsPrivilegedAsync(
+        AuthenticationStateProvider auth,
+        IDbContextFactory<AppDbContext> dbFactory)
     {
         var state = await auth.GetAuthenticationStateAsync();
         var user = state.User;
 
+        // 1️⃣ Get role ids from claims (unchanged logic)
         var roleIds = user.Claims
             .Where(c => c.Type is "roleId" or "RoleId" or System.Security.Claims.ClaimTypes.Role)
             .Select(c => c.Value)
@@ -138,27 +110,21 @@ public sealed class ChatAgentFactory
             .Distinct()
             .ToArray();
 
-        return roleIds.Contains(3);
-    }
-    
+        if (roleIds.Length == 0)
+            return false;
 
-    private static async Task<bool> CanViewCompensationAsync(AuthenticationStateProvider auth)
-    {
-        var state = await auth.GetAuthenticationStateAsync();
-        var user = state.User;
+        // 2️⃣ Query privileged roles from DB
+        await using var db = await dbFactory.CreateDbContextAsync();
 
-        // Adjust to your real claims/roles:
-        // Example: role claim contains "HR" or "Payroll"
-        return user.IsInRole("HR") || user.IsInRole("Payroll") ||
-               user.Claims.Any(c => c.Type == "permission" && c.Value.Equals("compensation.read", StringComparison.OrdinalIgnoreCase));
+        return await db.Roles
+            .AsNoTracking()
+            .AnyAsync(r => r.PrivilegedPPI == true && roleIds.Contains(r.RoleId));
     }
-    
 
     [Description("Get the current date and time")]
     private static Task<string> GetCurrentTime()
         => Task.FromResult(DateTime.Now.ToString());
 }
-
 
 /// <summary>Small helper to keep the safe-window logic out of ChatService.</summary>
 internal static class ChatMessageWindow
@@ -186,7 +152,4 @@ internal static class ChatMessageWindow
 
         return safe;
     }
-
- 
-    
 }

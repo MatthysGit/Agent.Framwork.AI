@@ -13,6 +13,8 @@ public partial class Role
 
     public DateTime CreatedOn { get; set; }
 
+    public bool? PrivilegedPPI { get; set; }
+
     public virtual ICollection<AppUser> AppUsers { get; set; } = new List<AppUser>();
 
     public virtual ICollection<DocumentRoleAccess> DocumentRoleAccesses { get; set; } = new List<DocumentRoleAccess>();
