@@ -7,6 +7,7 @@ using Ai.AgentFramwork.Massar.Web.Services.Admin;
 using Ai.AgentFramwork.Massar.Web.Services.ChartQuestions;
 using Ai.AgentFramwork.Massar.Web.Services.Chat;
 using Ai.AgentFramwork.Massar.Web.Services.Chat.charts;
+using Ai.AgentFramwork.Massar.Web.Services.Chat.DecisionTracking;
 using Ai.AgentFramwork.Massar.Web.Services.Documents;
 using Ai.AgentFramwork.Massar.Web.Services.DocumentSeach;
 using Ai.AgentFramwork.Massar.Web.Services.Ingestion;
@@ -14,6 +15,7 @@ using Ai.AgentFramwork.Massar.Web.Services.SchemaIntrospection;
 using Ai.AgentFramwork.Massar.Web.Services.Security;
 using Ai.AgentFramwork.Massar.Web.Services.Teams;
 using Ai.AgentFramwork.Massar.Web.Tools;
+using DocumentFormat.OpenXml.Office2016.Drawing.ChartDrawing;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
 using Microsoft.AspNetCore.Authentication;
@@ -163,7 +165,6 @@ builder.Services.AddSingleton<IAgentModelSelector, AgentModelSelector>();
 // ✅ Registry: stores builders + caches built agents per (agentName, modelKey)
 // If you previously had it Scoped, keep it Scoped.
 builder.Services.AddScoped<IAgentRegistry, AgentRegistry>();
-
 
 builder.Services.AddScoped<IAgentService, AgentService>();
 

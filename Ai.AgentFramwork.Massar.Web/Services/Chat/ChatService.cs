@@ -1,7 +1,10 @@
-﻿using Ai.AgentFramwork.Massar.Web.Components.Pages.Chat;
+﻿// File: Services/Chat/ChatService.cs
+using Ai.AgentFramwork.Massar.Web.Components.Pages.Chat;
 using Ai.AgentFramwork.Massar.Web.DBModels;
 using Ai.AgentFramwork.Massar.Web.DTO;
 using Ai.AgentFramwork.Massar.Web.Models;
+using Ai.AgentFramwork.Massar.Web.Services.Chat.DecisionTracking; // ✅ added
+using Ai.AgentFramwork.Massar.Web.Services.Chat.Pipeline;          // ✅ added
 using Ai.AgentFramwork.Massar.Web.Tools;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Forms;
@@ -33,6 +36,9 @@ public sealed class ChatService
 
     public string? CurrentAgentName { get; private set; }
 
+    // ✅ Decision tracker signal for the last completed pipeline turn (UI can read this)
+    public ChatPipeline.DecisionCandidate? LastDecisionCandidate { get; set; }
+
     public event Action? OnMessagesUpdated
     {
         add => _session.OnMessagesUpdated += value;
@@ -62,7 +68,7 @@ public sealed class ChatService
         _docSearchTool = docSearchTool;
         _docEditTool = docEditTool;
 
-        // Build pipeline (AI router + deterministic execution)
+        // ✅ Build pipeline (ChatAgentFactory is responsible for building the DecisionTracker internally)
         _pipeline = agentFactory.BuildPipeline(
             tools,
             session,
@@ -70,7 +76,8 @@ public sealed class ChatService
             auth,
             docSearchTool,
             docEditTool,
-            onRoute: agentName => CurrentAgentName = agentName
+            onRoute: agentName => CurrentAgentName = agentName,
+            getOwnerUserId: () => GetMyUserIdAsync().GetAwaiter().GetResult() // optional (sync)
         );
     }
 
@@ -78,6 +85,128 @@ public sealed class ChatService
     {
         Global = 1,
         Scoped = 2
+    }
+
+    // ✅ Clears per-turn UI signals (prevents dialog popping again)
+    private void ClearTurnSignals()
+    {
+        LastDecisionCandidate = null;
+    }
+
+    /// <summary>
+    /// Persists a decision into DecisionRecord table.
+    /// Uses reflection to avoid compile breaks if your DecisionRecord fields differ slightly.
+    /// </summary>
+    public async Task<Guid> SaveDecisionRecordAsync(
+        DecisionDraft draft,
+        DecisionDetection detection,
+        CancellationToken ct = default)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+
+        //add back1
+        var row = new DecisionRecord();
+
+        // Key (try common names)
+        var newId = Guid.NewGuid();
+        SetFirstExisting(row,
+            new (string Name, object? Value)[]
+            {
+                ("DecisionRecordId", newId),
+                ("Id", newId),
+                ("DecisionId", newId)
+            });
+
+        // Required-ish
+        SetIfExists(row, "Decision", draft.Decision);
+        SetIfExists(row, "Rationale", draft.Rationale);
+
+        // Created timestamps (try common names)
+        SetFirstExisting(row,
+            new (string Name, object? Value)[]
+            {
+                ("CreatedOnUtc", DateTime.UtcNow),
+                ("CreatedUtc", DateTime.UtcNow),
+                ("CreatedOn", DateTime.UtcNow)
+            });
+
+        // Optional metadata
+        SetIfExists(row, "OwnerUserId", draft.OwnerUserId);
+        SetIfExists(row, "ConversationId", draft.ConversationId);
+        SetIfExists(row, "ConfidenceScore", draft.ConfidenceScore);
+        SetIfExists(row, "SourceMode", draft.SourceMode);
+        SetIfExists(row, "Trigger", detection.Trigger);
+        SetIfExists(row, "Excerpt", detection.Excerpt);
+
+        // Safer than db.DecisionRecords.Add(...) if DbSet name differs
+
+        //add back1
+        db.Set<DecisionRecord>().Add(row);
+        await db.SaveChangesAsync(ct);
+
+        // Return id if possible (try to read it back)
+        var savedId =
+            GetGuidIfExists(row, "DecisionRecordId") ??
+            GetGuidIfExists(row, "Id") ??
+            GetGuidIfExists(row, "DecisionId") ??
+            newId;
+
+        return savedId;
+    }
+
+    private static void SetIfExists(object target, string propName, object? value)
+    {
+        var p = target.GetType().GetProperty(propName, BindingFlags.Public | BindingFlags.Instance);
+        if (p is null || !p.CanWrite) return;
+
+        if (value is null)
+        {
+            // allow setting null for nullable/reference props
+            if (!p.PropertyType.IsValueType || Nullable.GetUnderlyingType(p.PropertyType) is not null)
+                p.SetValue(target, null);
+            return;
+        }
+
+        // If type matches, set directly
+        if (p.PropertyType.IsAssignableFrom(value.GetType()))
+        {
+            p.SetValue(target, value);
+            return;
+        }
+
+        // Try convert (e.g., Guid? -> Guid, double -> decimal, etc.)
+        try
+        {
+            var destType = Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType;
+            var converted = Convert.ChangeType(value, destType);
+            p.SetValue(target, converted);
+        }
+        catch
+        {
+            // ignore if cannot convert
+        }
+    }
+
+    private static void SetFirstExisting(object target, IEnumerable<(string Name, object? Value)> candidates)
+    {
+        foreach (var (name, value) in candidates)
+        {
+            var p = target.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+            if (p is null || !p.CanWrite) continue;
+            SetIfExists(target, name, value);
+            break;
+        }
+    }
+
+    private static Guid? GetGuidIfExists(object target, string propName)
+    {
+        var p = target.GetType().GetProperty(propName);
+        if (p is null) return null;
+
+        var v = p.GetValue(target);
+        if (v is Guid g) return g;
+
+        return null;
     }
 
     private sealed record DocumentAttachmentDescriptor(
@@ -360,7 +489,7 @@ public sealed class ChatService
 
         var rawUserQuery = StripMarkdownLinks(GetText(userMessage));
 
-        // ---------- PIPELINE EXECUTION (replaces doc-routing + orchestrator) ----------
+        // ---------- PIPELINE EXECUTION ----------
         _session.ClearStreamingMessage();
 
         // Keep a live in-progress message for UI updates
@@ -368,10 +497,22 @@ public sealed class ChatService
         inProgress = new ChatMessage(ChatRole.Assistant, new[] { responseText });
         _session.SetStreamingMessage(inProgress);
 
-        // Execute pipeline (router decides: doc search/edit, sql, chart, general)
+        // ✅ Clear any previous decision candidate before running a new turn
+        ClearTurnSignals();
+
+        // Execute pipeline
         var result = await _pipeline.ExecuteAsync(rawUserQuery, streamCt);
 
-        // Update UI once (pipeline is deterministic; can be upgraded to true streaming later)
+        // ✅ Capture decision candidate for UI to consume AFTER the send finishes
+        LastDecisionCandidate = result.DecisionCandidate;
+
+        Console.WriteLine($"[DECISION] candidate? {LastDecisionCandidate != null}");
+        if (LastDecisionCandidate != null)
+        {
+            Console.WriteLine($"[DECISION] conf={LastDecisionCandidate.Detection.ConfidenceScore:0.00} trigger={LastDecisionCandidate.Detection.Trigger} mode={LastDecisionCandidate.Detection.Mode}");
+        }
+
+        // Update UI once
         responseText.Text = result.Text;
         ChatMessageItem.NotifyChanged(inProgress);
         yield return _session.Messages;
@@ -379,10 +520,12 @@ public sealed class ChatService
         var rawAssistant = result.Text;
         Console.WriteLine("RAW ASSISTANT OUTPUT:" + rawAssistant);
 
-        // ---------- Attachment JSON handling (unchanged behavior) ----------
-        // If pipeline returned DocumentSearch/DocumentEdit JSON, parse it + materialize attachments exactly as before.
+        // ---------- Attachment JSON handling ----------
         if (TryParseDocSearchJson(rawAssistant, out var docPayload) && docPayload is not null)
         {
+            // ✅ Decision popup should NOT show for doc-json replies
+            LastDecisionCandidate = null;
+
             var roleIds = await GetRoleIdsAsync(persistCt);
 
             var listObj = (object)_session.CreatedAssistantAttachments;

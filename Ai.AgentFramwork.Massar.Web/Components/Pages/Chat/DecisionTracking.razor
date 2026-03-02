@@ -1,0 +1,75 @@
+﻿@using MudBlazor
+@using Ai.AgentFramwork.Massar.Web.Services.Chat.DecisionTracking
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h6">Record a formal decision?</MudText>
+
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Trigger: @Detection?.Trigger • Confidence: @($"{Detection?.ConfidenceScore:0.00}")
+            </MudText>
+
+            <MudTextField @bind-Value="_decision"
+                          Label="Decision"
+                          Variant="Variant.Outlined"
+                          Lines="2"
+                          AutoGrow="true" />
+
+            <MudTextField @bind-Value="_rationale"
+                          Label="Rationale"
+                          Variant="Variant.Outlined"
+                          Lines="3"
+                          AutoGrow="true" />
+
+            <MudTextField @bind-Value="_relatedDocuments"
+                          Label="Related documents (comma-separated)"
+                          Variant="Variant.Outlined"
+                          Lines="2"
+                          AutoGrow="true" />
+        </MudStack>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Submit" Disabled="@string.IsNullOrWhiteSpace(_decision)">
+            Save
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public DecisionDetection? Detection { get; set; }
+    [Parameter] public DecisionDraft? Draft { get; set; }
+
+    private string? _decision;
+    private string? _rationale;
+    private string? _relatedDocuments;
+
+    protected override void OnInitialized()
+    {
+        _decision = Draft?.Decision;
+        _rationale = Draft?.Rationale;
+        _relatedDocuments = Draft?.RelatedDocuments is { Count: > 0 }
+            ? string.Join(", ", Draft.RelatedDocuments)
+            : null;
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void Submit()
+    {
+        var docs = (_relatedDocuments ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+        MudDialog.Close(DialogResult.Ok(new DecisionRecordInput(
+            Decision: (_decision ?? "").Trim(),
+            Rationale: string.IsNullOrWhiteSpace(_rationale) ? null : _rationale.Trim(),
+            RelatedDocuments: docs
+        )));
+    }
+
+    public sealed record DecisionRecordInput(string Decision, string? Rationale, List<string> RelatedDocuments);
+}
