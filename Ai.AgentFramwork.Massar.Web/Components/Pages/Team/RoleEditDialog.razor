@@ -9,10 +9,15 @@
                           Label="Role name"
                           Variant="Variant.Outlined"
                           Dense="true"
-                          Required="true"/>
+                          Required="true" />
 
             <MudSwitch T="bool" Dense="true" @bind-Value="_isActive" Color="Color.Success">
                 Active
+            </MudSwitch>
+
+            <!-- NEW: Privileged PPI (UI only; persistence requires service patch) -->
+            <MudSwitch T="bool" Dense="true" @bind-Value="_privilegedPpi" Color="Color.Info">
+                Privileged PPI
             </MudSwitch>
         </MudStack>
     </DialogContent>
@@ -35,6 +40,9 @@
     private string _name = string.Empty;
     private bool _isActive = true;
 
+    // NEW (treat null as false in UI)
+    private bool _privilegedPpi = false;
+
     protected override async Task OnInitializedAsync()
     {
         if (!_isEdit) return;
@@ -49,6 +57,7 @@
 
         _name = role.Name ?? string.Empty;
         _isActive = role.IsActive;
+        _privilegedPpi = role.PrivilegedPPI ?? false;
     }
 
     private void OnCancel()
@@ -67,10 +76,11 @@
         _saving = true;
         try
         {
+            // NOTE: Current service doesn't support privilegedPpi yet, so we only save name/isActive for now.
             if (!_isEdit)
-                await TeamService.CreateRoleAsync(_name.Trim(), _isActive);
+                await TeamService.CreateRoleAsync(_name.Trim(), _isActive, _privilegedPpi, default);
             else
-                await TeamService.UpdateRoleAsync(RoleId!.Value, _name.Trim(), _isActive);
+                await TeamService.UpdateRoleAsync(RoleId!.Value, _name.Trim(), _isActive, _privilegedPpi, default);
 
             MudDialog.Close(DialogResult.Ok(true));
         }
@@ -83,5 +93,4 @@
             _saving = false;
         }
     }
-
 }

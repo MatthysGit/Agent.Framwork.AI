@@ -124,7 +124,7 @@ public sealed class TeamAdminService : ITeamAdminService
         return await db.Roles.AsNoTracking().FirstOrDefaultAsync(r => r.RoleId == roleId, ct);
     }
 
-    public async Task<int> CreateRoleAsync(string name, bool isActive, CancellationToken ct = default)
+    public async Task<int> CreateRoleAsync(string name, bool isActive, bool privilegedPpi, CancellationToken ct = default)
     {
         name = Normalize(name);
         if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Role name is required.", nameof(name));
@@ -134,13 +134,13 @@ public sealed class TeamAdminService : ITeamAdminService
         var dup = await db.Roles.AnyAsync(r => r.Name == name, ct);
         if (dup) throw new InvalidOperationException($"Role '{name}' already exists.");
 
-        var entity = new Role { Name = name, IsActive = isActive, CreatedOn = DateTime.Now };
+        var entity = new Role { Name = name, IsActive = isActive, CreatedOn = DateTime.Now, PrivilegedPPI = privilegedPpi };
         db.Roles.Add(entity);
         await db.SaveChangesAsync(ct);
         return entity.RoleId;
     }
 
-    public async Task UpdateRoleAsync(int roleId, string name, bool isActive, CancellationToken ct = default)
+    public async Task UpdateRoleAsync(int roleId, string name, bool isActive, bool privilegedPpi, CancellationToken ct = default)
     {
         name = Normalize(name);
         if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Role name is required.", nameof(name));
@@ -155,6 +155,7 @@ public sealed class TeamAdminService : ITeamAdminService
 
         entity.Name = name;
         entity.IsActive = isActive;
+        entity.PrivilegedPPI= privilegedPpi;
 
         await db.SaveChangesAsync(ct);
     }
