@@ -1,12 +1,14 @@
 ﻿// File: Services/Chat/ChatAgentFactory.cs
 using Ai.AgentFramwork.Massar.Web.Agents;
 using Ai.AgentFramwork.Massar.Web.DBModels;
+using Ai.AgentFramwork.Massar.Web.Services.Chat.DecisionTracking;
 using Ai.AgentFramwork.Massar.Web.Services.Chat.Pipeline;
 using Ai.AgentFramwork.Massar.Web.Tools;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using OpenAI.Chat;
 using System.ComponentModel;
 using ChatMessage = Microsoft.Extensions.AI.ChatMessage;
@@ -31,12 +33,16 @@ public sealed class ChatAgentFactory
     private readonly IChatClientFactory _chatClientFactory;
     private readonly IAgentModelSelector _modelSelector;
 
+    // ✅ used to create logger without having a _decisionLogger field
+    private readonly ILoggerFactory _loggerFactory;
+
     public ChatAgentFactory(
         IConfiguration configuration,
         IAgentRegistry registry,
         IDbContextFactory<AppDbContext> dbFactory,
         IChatClientFactory chatClientFactory,
-        IAgentModelSelector modelSelector)
+        IAgentModelSelector modelSelector,
+        ILoggerFactory loggerFactory) // ✅ add this instead of ILogger<DecisionTrackerService>
     {
         _configuration = configuration;
         _registry = registry;
@@ -44,6 +50,8 @@ public sealed class ChatAgentFactory
 
         _chatClientFactory = chatClientFactory;
         _modelSelector = modelSelector;
+
+        _loggerFactory = loggerFactory;
     }
 
     // --- Pipeline builder (AI Router + deterministic execution) ---
@@ -54,7 +62,9 @@ public sealed class ChatAgentFactory
         AuthenticationStateProvider auth,
         DocumentSearchTool docSearchTool,
         DocumentEditTool docEditTool,
-        Action<string>? onRoute = null)
+        IDecisionTrackerService? decisionTracker = null,   // ✅ optional
+        Action<string>? onRoute = null,
+        Func<string?>? getOwnerUserId = null)
     {
         var sqlServerSelectTool = new SqlServerSelectTool((IConfigurationRoot)_configuration, auth);
         var docSearchToolWrapper = new DocumentSearchToolWrapper(docSearchTool, session);
@@ -83,11 +93,18 @@ public sealed class ChatAgentFactory
             onRoute: onRoute
         );
 
+        // ✅ Build DecisionTracker here if not supplied (caller is not DI-registered)
+        if (decisionTracker is null)
+        {
+            var logger = _loggerFactory.CreateLogger<DecisionTrackerService>();
+            decisionTracker = new DecisionTrackerService(caller, logger);
+        }
+
         // ✅ Router uses its own model (runtime)
         var routerModelKey = _modelSelector.GetModelForAgent(OrchestratorAgentName);
         ChatClient routerClient = _chatClientFactory.Create(routerModelKey);
 
-        var router = new Ai.AgentFramwork.Massar.Web.Agents.RouterAgent(
+        var router = new RouterAgent(
             routerClient,
             historyProvider: () => ChatMessageWindow.ToSafeTextOnlyMessages(session.Messages, takeLast: 40)
         );
@@ -103,7 +120,9 @@ public sealed class ChatAgentFactory
             docEditTool,
             GetConversationIdGuid,
             canViewCompensationAsync: () => IsPrivileged(),
-            isPrivilegedAsync: () => IsPrivileged()
+            isPrivilegedAsync: () => IsPrivileged(),
+            decisionTracker: decisionTracker,
+            getOwnerUserId: getOwnerUserId
         );
     }
 

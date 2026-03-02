@@ -3,69 +3,30 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Ai.AgentFramwork.Massar.Web.Agents;
 using Ai.AgentFramwork.Massar.Web.Services.Chat;
+using Ai.AgentFramwork.Massar.Web.Services.Chat.DecisionTracking;
 using Ai.AgentFramwork.Massar.Web.Tools;
 
 namespace Ai.AgentFramwork.Massar.Web.Services.Chat.Pipeline;
 
-/// <summary>
-/// Orchestrates a single chat turn:
-/// 1) Applies policy gates (e.g., individual compensation).
-/// 2) Routes the request to the correct agent/mode (doc search/edit, SQL, chart, or general).
-/// 3) Executes the chosen path and shapes output into the UI contract (JSON for doc tools, markdown for others).
-///
-/// NOTE:
-/// - DocSearch/DocEdit paths intentionally return JSON unchanged (attachments contract).
-/// - SQL paths are forced to execute without clarification questions.
-/// - Chart mode uses SQL -> strict JSON -> chart image; with table fallback.
-/// </summary>
 public sealed class ChatPipeline
 {
     // ----------------------------
     // Dependencies (injected)
     // ----------------------------
-
-    /// <summary>
-    /// Router determines which agent/mode to use (e.g., chart vs. normal, SQL agent vs. general).
-    /// Typically implemented via an LLM prompt that emits a structured decision.
-    /// </summary>
     private readonly RouterAgent _router;
-
-    /// <summary>
-    /// Tool that calls specialist agents by name and returns their final response.
-    /// </summary>
     private readonly AgentCallerTool _caller;
-
-    /// <summary>
-    /// Chart rendering tools (bar/pie/line/etc.) that produce PNGs and return a URL.
-    /// </summary>
     private readonly ChatTools _chartTools;
-
-    /// <summary>
-    /// Document search tool; returns JSON in your attachment schema.
-    /// </summary>
     private readonly DocumentSearchTool _docSearchTool;
-
-    /// <summary>
-    /// Document edit tool; returns JSON in your attachment schema.
-    /// </summary>
     private readonly DocumentEditTool _docEditTool;
-
-    /// <summary>
-    /// Retrieves the current conversation ID used by doc tools.
-    /// </summary>
     private readonly Func<Guid> _getConversationId;
-
-    /// <summary>
-    /// Authorization gate: whether the current user can see individual compensation.
-    /// (Aggregated compensation is usually allowed; individual is blocked unless authorized.)
-    /// </summary>
     private readonly Func<Task<bool>> _canViewCompensationAsync;
+    private readonly Func<Task<bool>> _isPrivilegedAsync;
 
-    /// <summary>
-    /// Authorization gate for privileged operations (your comment indicates "RoleId == 3",
-    /// but you later moved it to DB-driven PrivilegedPPI. This delegate abstracts that detail).
-    /// </summary>
-    private readonly Func<Task<bool>> _isPrivilegedAsync; // RoleId == 3
+    // ✅ Decision tracking
+    private readonly IDecisionTrackerService _decisionTracker;
+
+    // Optional: allow ChatService to pass the current user id (claims subject, etc.)
+    private readonly Func<string?>? _getOwnerUserId;
 
     public ChatPipeline(
         RouterAgent router,
@@ -75,7 +36,9 @@ public sealed class ChatPipeline
         DocumentEditTool docEditTool,
         Func<Guid> getConversationId,
         Func<Task<bool>> canViewCompensationAsync,
-        Func<Task<bool>> isPrivilegedAsync)
+        Func<Task<bool>> isPrivilegedAsync,
+        IDecisionTrackerService decisionTracker,
+        Func<string?>? getOwnerUserId = null)
     {
         _router = router;
         _caller = caller;
@@ -85,31 +48,35 @@ public sealed class ChatPipeline
         _getConversationId = getConversationId;
         _canViewCompensationAsync = canViewCompensationAsync;
         _isPrivilegedAsync = isPrivilegedAsync;
+
+        _decisionTracker = decisionTracker;
+        _getOwnerUserId = getOwnerUserId;
     }
 
     /// <summary>
     /// Final output returned to the chat service/UI.
-    /// - Text: final assistant content (markdown, JSON, etc. depending on path)
+    /// - Text: final assistant content
     /// - RoutedAgent: the agent name chosen/executed (or "PolicyGuard")
     /// - RouterReason: explanation from the router (or policy reason)
+    /// - DecisionCandidate: optional decision tracking payload for UI dialog
     /// </summary>
-    public sealed record PipelineResult(string Text, string RoutedAgent, string RouterReason);
+    public sealed record PipelineResult(
+        string Text,
+        string RoutedAgent,
+        string RouterReason,
+        DecisionCandidate? DecisionCandidate = null);
 
     /// <summary>
-    /// Executes one user turn end-to-end.
-    /// IMPORTANT ORDER:
-    /// 1) Policy gate(s) (must happen before routing/tools)
-    /// 2) Router decision
-    /// 3) Execute chosen path (doc, chart, sql, default agent)
-    /// 4) Optional PPI pass (currently stubbed to no-op)
+    /// UI-friendly decision candidate: the UI can show a dialog and, on confirm,
+    /// call a backend endpoint to persist the draft.
     /// </summary>
+    public sealed record DecisionCandidate(
+        string Prompt,
+        DecisionDetection Detection,
+        DecisionDraft? Draft);
+
     public async Task<PipelineResult> ExecuteAsync(string userText, CancellationToken ct = default)
     {
-        // --------------------------------------------------------------------
-        // 🔒 Sensitive compensation gate (MUST run BEFORE routing/tools)
-        //
-        // This prevents leakage even if the router misroutes or tools respond oddly.
-        // --------------------------------------------------------------------
         if (IsIndividualCompensationQuestion(userText))
         {
             var allowed = await _canViewCompensationAsync();
@@ -123,17 +90,9 @@ public sealed class ChatPipeline
             }
         }
 
-        // Total time for this pipeline execution (for diagnostics)
         var swTotal = System.Diagnostics.Stopwatch.StartNew();
-
-        // Time spent in routing only
         var swRoute = System.Diagnostics.Stopwatch.StartNew();
 
-        // Router decides:
-        // - r.Agent (which specialist)
-        // - r.Mode (e.g., "chart" vs "normal")
-        // - r.ChartType (if chart mode)
-        // - r.Reason (explain why)
         var r = await _router.RouteAsync(userText, ct);
 
         swRoute.Stop();
@@ -141,10 +100,9 @@ public sealed class ChatPipeline
             $"[ROUTER] mode={r.Mode} agent={r.Agent} chartType={r.ChartType ?? "null"} " +
             $"reason=\"{r.Reason}\" routeMs={swRoute.ElapsedMilliseconds}");
 
-        // --------------------------------------------------------------------
-        // Document search/edit are executed directly via tools so the JSON stays
-        // identical to what your attachment/UI expects.
-        // --------------------------------------------------------------------
+        // ----------------------------
+        // Doc tools return JSON unchanged
+        // ----------------------------
         if (r.Agent.Equals(ChatAgentFactory.DocumentSearchAgentName, StringComparison.OrdinalIgnoreCase))
         {
             var convoId = _getConversationId();
@@ -159,9 +117,6 @@ public sealed class ChatPipeline
         if (r.Agent.Equals(ChatAgentFactory.DocumentEditAgentName, StringComparison.OrdinalIgnoreCase))
         {
             var convoId = _getConversationId();
-
-            // Infer a stable “edit instruction” label that the edit tool can use
-            // (keeps user input + intent separate).
             var instruction = InferEditInstruction(userText);
 
             var json = await _docEditTool.EditDocumentAsync(convoId, userText, instruction);
@@ -172,23 +127,14 @@ public sealed class ChatPipeline
             return new PipelineResult(json ?? "No edit result returned.", r.Agent, r.Reason);
         }
 
-        // --------------------------------------------------------------------
-        // Chart path:
-        // - Force SQL agent to return STRICT chart JSON
-        // - Parse/normalize chart JSON (supports multiple schemas)
-        // - Render chart -> return markdown image
-        // - If chart fails, fallback to SQL table JSON -> markdown table
-        // --------------------------------------------------------------------
+        // ----------------------------
+        // Chart path (unchanged)
+        // ----------------------------
         if (r.Mode.Equals("chart", StringComparison.OrdinalIgnoreCase))
         {
-            // Normalize chart type (your renderer wants "bar" for columns)
             var desired = string.IsNullOrWhiteSpace(r.ChartType) ? "column" : r.ChartType!.Trim().ToLowerInvariant();
             if (desired == "bar") desired = "column";
 
-            // Contract-enforcement prompt:
-            // - No follow-up questions allowed
-            // - Must use your SQL tool order rules
-            // - Must output ONLY strict JSON with the specified schema
             var sqlPrompt = string.Format(@"
 You are the SQL agent.
 
@@ -238,17 +184,12 @@ User request:
 ", userText);
 
             var sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, sqlPrompt, cancellationToken: ct);
-
-            // Raw output logging is critical because chart parsing is brittle.
             Console.WriteLine("SQL_AGENT_RAW_FOR_CHART:\n" + sql.Text);
 
-            // Extract first JSON object in case the model wrapped JSON in fences or added stray text.
             var jsonOnly = ExtractFirstJsonObject(sql.Text);
             if (string.IsNullOrWhiteSpace(jsonOnly))
             {
                 Console.WriteLine("[SQL_CHART_CONTRACT_VIOLATION] Non-JSON response from SQL agent:\n" + sql.Text);
-
-                // Safe default so chart renderer doesn't crash.
                 jsonOnly = @"{
   ""chartType"": ""column"",
   ""title"": ""No data / SQL agent returned non-JSON"",
@@ -260,22 +201,19 @@ User request:
 
             try
             {
-                // Parse chart JSON and normalize schema variants into ChartPayload.
                 var chart = ParseChartJson(jsonOnly);
                 Console.WriteLine($"CHART_PARSED: type={chart.ChartType}, labels={(chart.Labels?.Count ?? 0)}, values={(chart.Values?.Count ?? 0)}, series={(chart.Series?.Count ?? 0)}");
 
-                // Render and get URL to PNG
                 var url = await CreateChartAsync(chart);
 
                 swTotal.Stop();
                 Console.WriteLine($"[PIPELINE] done agent={ChatAgentFactory.SqlAgentName} mode=chart totalMs={swTotal.ElapsedMilliseconds}");
 
-                // UI contract: return markdown image only
-                return new PipelineResult($"![chart]({url})", ChatAgentFactory.SqlAgentName, r.Reason);
+                var text = $"![chart]({url})";
+                return await MaybeAttachDecisionCandidateAsync(userText, text, ChatAgentFactory.SqlAgentName, r.Reason, ct);
             }
             catch (Exception ex)
             {
-                // If parsing or rendering fails, we attempt a safer table-based fallback.
                 Console.WriteLine("[CHART_FALLBACK] Chart failed: " + ex);
 
                 var tablePrompt = string.Format(@"
@@ -302,32 +240,29 @@ User request:
 ", userText);
 
                 var tableJson = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, tablePrompt, cancellationToken: ct);
-
-                // Extract JSON (same reason as above)
                 var tableJsonOnly = ExtractFirstJsonObject(tableJson.Text) ?? tableJson.Text;
 
-                // Convert JSON -> markdown table; if that fails, surface the error.
                 var fallbackMd = TryRenderTableMarkdown(tableJsonOnly, out var tableMd)
                     ? tableMd
                     : $"Chart generation failed and table fallback could not be generated.\n\nError: {ex.Message}";
 
-                // Optional post-processing pass (currently stubbed no-op)
                 var checkedFallback = await RunPpiSafeAsync(userText, fallbackMd, ct);
 
                 swTotal.Stop();
                 Console.WriteLine($"[PIPELINE] done agent={ChatAgentFactory.SqlAgentName} mode=chart-fallback totalMs={swTotal.ElapsedMilliseconds}");
 
-                return new PipelineResult(checkedFallback, ChatAgentFactory.SqlAgentName, $"{r.Reason} (chart->table fallback)");
+                return await MaybeAttachDecisionCandidateAsync(
+                    userText,
+                    checkedFallback,
+                    ChatAgentFactory.SqlAgentName,
+                    $"{r.Reason} (chart->table fallback)",
+                    ct);
             }
         }
 
-        // --------------------------------------------------------------------
-        // ✅ ENFORCE: If router chose SQL agent for a NON-CHART request, force execution
-        // (no clarifying questions), then format as a 1-column markdown table.
-        //
-        // This is specifically to prevent the SQL agent from responding with
-        // "Could you provide more context?".
-        // --------------------------------------------------------------------
+        // ----------------------------
+        // SQL enforcement path (unchanged logic, but we add decision hook at end)
+        // ----------------------------
         if (r.Agent.Equals(ChatAgentFactory.SqlAgentName, StringComparison.OrdinalIgnoreCase) &&
             !r.Mode.Equals("chart", StringComparison.OrdinalIgnoreCase))
         {
@@ -356,7 +291,6 @@ USER REQUEST:
 
             var sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, enforcedSqlPrompt, cancellationToken: ct);
 
-            // Retry once if it still asked a question (common model failure mode).
             if (LooksLikeClarifyingQuestion(sql.Text))
             {
                 Console.WriteLine("[SQL_RETRY] SQL agent returned a question. Retrying with stricter enforcement.");
@@ -384,24 +318,20 @@ USER REQUEST:
                 sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, retryPrompt, cancellationToken: ct);
             }
 
-            // UI shaping: force your “single-value” grid/table style
             var tableMdSimple = FormatSqlAnswerAsSingleColumnTable(userText, sql.Text);
-
-            // Optional post-processing pass (currently stubbed no-op)
             var checkedSql = await RunPpiSafeAsync(userText, tableMdSimple, ct);
 
             swTotal.Stop();
             Console.WriteLine($"[PIPELINE] done agent={ChatAgentFactory.SqlAgentName} mode=sql totalMs={swTotal.ElapsedMilliseconds}");
 
-            return new PipelineResult(checkedSql, ChatAgentFactory.SqlAgentName, r.Reason);
+            return await MaybeAttachDecisionCandidateAsync(userText, checkedSql, ChatAgentFactory.SqlAgentName, r.Reason, ct);
         }
 
-        // --------------------------------------------------------------------
-        // Default: call chosen agent with raw user text
-        // --------------------------------------------------------------------
+        // ----------------------------
+        // Default: call chosen agent
+        // ----------------------------
         var call = await _caller.CallAgentAsync(r.Agent, userText, cancellationToken: ct);
 
-        // Skip PPI for doc tools that must return JSON unchanged
         if (r.Agent.Equals(ChatAgentFactory.DocumentSearchAgentName, StringComparison.OrdinalIgnoreCase) ||
             r.Agent.Equals(ChatAgentFactory.DocumentEditAgentName, StringComparison.OrdinalIgnoreCase))
         {
@@ -410,27 +340,88 @@ USER REQUEST:
             return new PipelineResult(call.Text, call.AgentName, r.Reason);
         }
 
-        // Run PPI (currently no-op / stub)
         var checkedAnswer = await RunPpiSafeAsync(userText, call.Text, ct);
 
         swTotal.Stop();
         Console.WriteLine($"[PIPELINE] done agent={call.AgentName} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
 
-        return new PipelineResult(checkedAnswer, call.AgentName, r.Reason);
+        return await MaybeAttachDecisionCandidateAsync(userText, checkedAnswer, call.AgentName, r.Reason, ct);
     }
 
-    /// <summary>
-    /// Lightweight detector for “individual compensation” questions (block unless authorized).
-    /// This is a heuristic: it may produce false positives/negatives.
-    /// (You also have a richer ClassifyPolicy() below; consider consolidating.)
-    /// </summary>
+    // ✅ Decision hook: attach candidate + add friendly prompt line for UIs that don’t implement the dialog yet
+
+    private async Task<PipelineResult> MaybeAttachDecisionCandidateAsync(
+        string userText,
+        string assistantText,
+        string routedAgent,
+        string routerReason,
+        CancellationToken ct)
+    {
+        // Don’t attempt decision tracking on JSON attachments responses
+        if (LooksLikeJson(assistantText))
+            return new PipelineResult(assistantText, routedAgent, routerReason);
+
+        // ✅ Never run decision detection on meta turns (prevents infinite loops)
+        if (IsDecisionTrackerMetaTurn(userText) || IsDecisionTrackerMetaTurn(assistantText))
+            return new PipelineResult(assistantText, routedAgent, routerReason);
+
+        Guid? convoId = null;
+        try { convoId = _getConversationId(); } catch { /* ignore */ }
+
+        var detection = await _decisionTracker.DetectAsync(userText, assistantText, convoId, ct);
+        if (detection is null)
+            return new PipelineResult(assistantText, routedAgent, routerReason);
+
+        var ownerUserId = _getOwnerUserId?.Invoke();
+
+        // Draft is optional; if it fails, UI can still record manually
+        var draft = await _decisionTracker.BuildDraftAsync(userText, assistantText, detection, convoId, ownerUserId, ct);
+
+        // ✅ IMPORTANT: do NOT append “Potential decision detected …” into assistantText
+        // The Mud dialog is the UX surface for this.
+        var prompt = "Do you want me to record this as a formal decision?";
+
+        return new PipelineResult(
+            Text: assistantText,
+            RoutedAgent: routedAgent,
+            RouterReason: routerReason,
+            DecisionCandidate: new DecisionCandidate(prompt, detection, draft));
+    }
+
+    private static bool IsDecisionTrackerMetaTurn(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        var t = text.Trim().ToLowerInvariant();
+
+        // Common meta prompts
+        if (t.Contains("potential decision detected")) return true;
+        if (t.Contains("record this as a formal decision")) return true;
+
+        // Common confirmations
+        if (t == "yes" || t == "y" || t == "yeah" || t == "yep") return true;
+        if (t == "no" || t == "n" || t == "nope") return true;
+
+        // Some UIs might echo the prompt with emojis/formatting
+        if (t.Contains("🟡") && t.Contains("decision")) return true;
+
+        return false;
+    }
+
+
+    private static bool LooksLikeJson(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var t = text.TrimStart();
+        return t.StartsWith("{") || t.StartsWith("[");
+    }
+
     private static bool IsIndividualCompensationQuestion(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
 
         var t = text.ToLowerInvariant();
 
-        // Compensation keywords
         var comp =
             t.Contains("salary") ||
             t.Contains("compensation") ||
@@ -441,7 +432,6 @@ USER REQUEST:
 
         if (!comp) return false;
 
-        // “individual” targeting signals
         var individual =
             t.Contains("what is ") ||
             t.Contains("what's ") ||
@@ -454,14 +444,6 @@ USER REQUEST:
         return individual;
     }
 
-    /// <summary>
-    /// Intended place to run PPI checks (post-processing: safety, number inflation, policy).
-    /// Currently returns draft unchanged because this method is static and has no access to _caller.
-    ///
-    /// Recommendation:
-    /// - Make this method instance-based so it can call _caller, OR
-    /// - Pass in a delegate Func&lt;string,string,Task&lt;string&gt;&gt; that invokes PPI agent.
-    /// </summary>
     private static async Task<string> RunPpiSafeAsync(string userText, string draft, CancellationToken ct)
     {
         try
@@ -474,9 +456,6 @@ USER REQUEST:
         }
     }
 
-    /// <summary>
-    /// Converts a freeform user “edit request” into a stable instruction label used by DocumentEditTool.
-    /// </summary>
     private static string InferEditInstruction(string userText)
     {
         var lower = (userText ?? "").ToLowerInvariant();
@@ -488,10 +467,6 @@ USER REQUEST:
         return "add comments";
     }
 
-    /// <summary>
-    /// Heuristic to detect whether an agent response is trying to ask the user for more context.
-    /// Used to trigger a forced retry for the SQL agent.
-    /// </summary>
     private static bool LooksLikeClarifyingQuestion(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
@@ -506,17 +481,12 @@ USER REQUEST:
         return false;
     }
 
-    /// <summary>
-    /// Extracts the first JSON object found in a string (handles code fences / extra prose).
-    /// Used for “LLM contract enforcement” when models occasionally add explanation text.
-    /// </summary>
     private static string? ExtractFirstJsonObject(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
 
         var s = text.Trim();
 
-        // Remove common code fences
         s = s.Replace("```json", "", StringComparison.OrdinalIgnoreCase)
              .Replace("```", "");
 
@@ -971,11 +941,11 @@ USER REQUEST:
         // "how many employees in dubai" -> employees (then "in dubai" can be handled elsewhere if you want)
         var strong = new[]
         {
-            @"\bhow many\s+(?<thing>.+?)(?:\s+(?:do|does)\s+\w+\s+have|\s+are\s+there|\s+is\s+there|\s+exist|\s+currently|\s+today|\s+right now|\?|$)",
-            @"\bnumber of\s+(?<thing>.+?)(?:\s+(?:do|does)\s+\w+\s+have|\s+are\s+there|\s+is\s+there|\?|$)",
-            @"\bcount(?:\s+of)?\s+(?<thing>.+?)(?:\s+(?:do|does)\s+\w+\s+have|\s+are\s+there|\s+is\s+there|\?|$)",
-            @"\btotal\s+(?<thing>.+?)(?:\s+(?:do|does)\s+\w+\s+have|\s+are\s+there|\s+is\s+there|\?|$)",
-        };
+          @"\bhow many\s+(?<thing>.+?)(?:\s+(?:do|does)\s+\w+\s+have|\s+are\s+there|\s+is\s+there|\s+exist|\s+currently|\s+today|\s+right now|\?|$)",
+          @"\bnumber of\s+(?<thing>.+?)(?:\s+(?:do|does)\s+\w+\s+have|\s+are\s+there|\s+is\s+there|\?|$)",
+          @"\bcount(?:\s+of)?\s+(?<thing>.+?)(?:\s+(?:do|does)\s+\w+\s+have|\s+are\s+there|\s+is\s+there|\?|$)",
+          @"\btotal\s+(?<thing>.+?)(?:\s+(?:do|does)\s+\w+\s+have|\s+are\s+there|\s+is\s+there|\?|$)",
+      };
 
         foreach (var pat in strong)
         {
@@ -1037,7 +1007,7 @@ USER REQUEST:
         if (input.Length == 0) return input;
 
         var lowerWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { "of", "the", "a", "an", "and", "or", "to", "in", "for", "by", "per", "with" };
+          { "of", "the", "a", "an", "and", "or", "to", "in", "for", "by", "per", "with" };
 
         var parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         for (int i = 0; i < parts.Length; i++)
@@ -1058,7 +1028,7 @@ USER REQUEST:
 
         return string.Join(' ', parts);
     }
-    
+
     /// <summary>
     /// Extracts the first integer from a string (e.g., "There are 1,234 employees").
     /// </summary>

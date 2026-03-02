@@ -35,6 +35,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<ChunkEmbedding> ChunkEmbeddings { get; set; }
 
+    public virtual DbSet<DecisionRecord> DecisionRecords { get; set; }
+
     public virtual DbSet<Document> Documents { get; set; }
 
     public virtual DbSet<DocumentCategory> DocumentCategories { get; set; }
@@ -292,6 +294,23 @@ public partial class AppDbContext : DbContext
                 .HasForeignKey(d => d.ChunkId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("FK_ChunkEmbeddings_Chunks");
+        });
+
+        modelBuilder.Entity<DecisionRecord>(entity =>
+        {
+            entity.ToTable("DecisionRecord");
+
+            entity.HasIndex(e => new { e.ConversationId, e.CreatedOn }, "IX_DecisionRecord_ConversationId_CreatedOn").IsDescending(false, true);
+
+            entity.HasIndex(e => new { e.OwnerUserId, e.CreatedOn }, "IX_DecisionRecord_OwnerUserId_CreatedOn").IsDescending(false, true);
+
+            entity.Property(e => e.ConfidenceScore).HasColumnType("decimal(5, 4)");
+            entity.Property(e => e.CreatedOn)
+                .HasPrecision(0)
+                .HasDefaultValueSql("(sysdatetime())", "DF_DecisionRecord_CreatedOn");
+            entity.Property(e => e.Decision).HasMaxLength(2000);
+            entity.Property(e => e.OwnerUserId).HasMaxLength(128);
+            entity.Property(e => e.Rationale).HasMaxLength(4000);
         });
 
         modelBuilder.Entity<Document>(entity =>

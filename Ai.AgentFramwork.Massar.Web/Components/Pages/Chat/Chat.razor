@@ -2,15 +2,19 @@
 @page "/chat"
 
 @inject ChatService ChatService
+@inject IChatContext ChatContext
+@inject MudBlazor.IDialogService DialogService
+
 @using Ai.AgentFramwork.Massar.Web.DBModels
 @using Ai.AgentFramwork.Massar.Web.DTO
 @using Ai.AgentFramwork.Massar.Web.Services.Chat
+@using Ai.AgentFramwork.Massar.Web.Services.Chat.DecisionTracking
 @using Microsoft.AspNetCore.Components.Forms
 @using Microsoft.AspNetCore.Authorization
+@using MudBlazor
 @using ChatMessage = Microsoft.Extensions.AI.ChatMessage
 @implements IDisposable
 @attribute [Authorize]
-@inject IChatContext ChatContext
 
 <PageTitle>Chat</PageTitle>
 
@@ -44,7 +48,7 @@
                     <div style="margin-top:20px; max-height:60vh; overflow:auto;">
                         @if (conversationsLoading)
                         {
-                            <MudText Typo="Typo.body2" >Loading...</MudText>
+                            <MudText Typo="Typo.body2">Loading...</MudText>
                         }
                         else if (conversations.Count == 0)
                         {
@@ -120,6 +124,37 @@
                 </ChatMessageList>
             </div>
 
+            <!-- ✅ Decision prompt banner (UI-only, does NOT modify assistantText) -->
+            @if (_showDecisionPrompt && ChatService.LastDecisionCandidate is not null)
+            {
+                var cand = ChatService.LastDecisionCandidate;
+
+                <MudPaper Class="pa-3 mb-2" Elevation="1">
+                    <MudText Typo="Typo.body2">
+                        🟡 <b>Potential decision detected</b> (confidence: @cand.Detection.ConfidenceScore.ToString("0.00"))
+                    </MudText>
+
+                    <MudText Typo="Typo.body2" Class="mt-1">
+                        Do you want me to record this as a formal decision?
+                    </MudText>
+
+                    <MudStack Row="true" Spacing="1" Class="mt-2">
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@_busy" OnClick="@SaveDecisionAsync">
+                            Yes
+                        </MudButton>
+
+                        <MudButton Variant="Variant.Outlined" Color="Color.Default" Disabled="@_busy" OnClick="@DismissDecisionPrompt">
+                            No
+                        </MudButton>
+                    </MudStack>
+
+                    @if (!string.IsNullOrWhiteSpace(_decisionSaveStatus))
+                    {
+                        <MudText Typo="Typo.caption" Class="mt-2">@_decisionSaveStatus</MudText>
+                    }
+                </MudPaper>
+            }
+
             <!-- Input area (pinned) -->
             <div class="chat-input-wrapper">
                 <ChatSuggestions OnSelected="@AddUserMessageAsync" @ref="@chatSuggestions" />
@@ -138,19 +173,13 @@
         min-height: 0;
     }
 
-
     .history-title-text {
-    background: linear-gradient(
-        to right,
-        rgba(99,102,241,.7),
-        rgba(99,102,241,1),
-        rgba(99,102,241,.7)
-    );
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-}
+        background: linear-gradient( to right, rgba(99,102,241,.7), rgba(99,102,241,1), rgba(99,102,241,.7) );
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
 
-    .waywo{
+    .waywo {
         font-weight: 300;
         color: rgba(0, 0, 0, 0.40);
         letter-spacing: 0.1px;
@@ -161,7 +190,6 @@
         width: 200px;
         min-width: 200px;
         overflow-y: auto;
-       /*  padding-right: 12px; */
         transition: width .18s ease, min-width .18s ease, padding .18s ease;
         position: relative;
         flex: 0 0 auto;
@@ -175,8 +203,7 @@
 
     .history-inner {
         border-radius: 12px;
-        /* padding: 12px; */
-        padding-top:12px;
+        padding-top: 12px;
         height: 100%;
         box-sizing: border-box;
     }
@@ -184,14 +211,13 @@
     .history-header {
         display: flex;
         align-items: center;
-        justify-content: space-between; /* keeps button at the right */
+        justify-content: space-between;
         gap: 8px;
     }
 
-
     .premium-bottom-border {
-    position: relative;
-}
+        position: relative;
+    }
 
     .empty-text {
         font-weight: 300;
@@ -199,31 +225,18 @@
         letter-spacing: 0.4px;
     }
 
-.premium-bottom-border::after {
-    content: "";
-    position: absolute;
-    left: 1px;
-    right: 1px;
-    bottom: 0;
-
-    height: 1.5px;
-    border-radius: 999px;
-
-    background: linear-gradient(
-        to right,
-        rgba(99,102,241,0),
-        rgba(99,102,241,.55),
-        rgba(99,102,241,.25),
-        rgba(99,102,241,0)
-    );
-
-    box-shadow:
-        0 0 0 1px rgba(255,255,255,.35),
-        0 3px 9px rgba(99,102,241,.25);
-
-    pointer-events: none;
-}
-
+    .premium-bottom-border::after {
+        content: "";
+        position: absolute;
+        left: 1px;
+        right: 1px;
+        bottom: 0;
+        height: 1.5px;
+        border-radius: 999px;
+        background: linear-gradient( to right, rgba(99,102,241,0), rgba(99,102,241,.55), rgba(99,102,241,.25), rgba(99,102,241,0) );
+        box-shadow: 0 0 0 1px rgba(255,255,255,.35), 0 3px 9px rgba(99,102,241,.25);
+        pointer-events: none;
+    }
 
     .history-header {
         position: relative;
@@ -248,19 +261,8 @@
         align-items: center;
         justify-content: center;
         color: rgba(0,0,0,.75);
-        margin-left: auto; /* ensures right alignment */
+        margin-left: auto;
     }
-/* 
-        .history-toggle:hover {
-            transform: translateY(-1px);
-            background: rgba(255,255,255,.18);
-            box-shadow: 0 10px 26px rgba(0,0,0,.16);
-        }
-
-        .history-toggle:active {
-            transform: translateY(0);
-            box-shadow: 0 6px 14px rgba(0,0,0,.14);
-        } */
 
     /* Premium divider */
     .vertical-divider {
@@ -411,6 +413,9 @@
     private ChatInput? chatInput;
     private ChatSuggestions? chatSuggestions;
 
+    private bool _showDecisionPrompt;
+    private string? _decisionSaveStatus;
+
     // ✅ Busy flag (uploading/processing)
     private bool _busy;
 
@@ -497,11 +502,48 @@
         await InvokeAsync(StateHasChanged);
     }
 
+    private void DismissDecisionPrompt()
+    {
+        _showDecisionPrompt = false;
+        _decisionSaveStatus = null;
+        ChatService.LastDecisionCandidate = null; // prevent re-show
+    }
+
+    private async Task SaveDecisionAsync()
+    {
+        var cand = ChatService.LastDecisionCandidate;
+        if (cand is null)
+        {
+            DismissDecisionPrompt();
+            return;
+        }
+
+        if (cand.Draft is null)
+        {
+            _decisionSaveStatus = "No draft was generated, so nothing was saved.";
+            return;
+        }
+
+        try
+        {
+            var id = await ChatService.SaveDecisionRecordAsync(cand.Draft, cand.Detection);
+            _decisionSaveStatus = $"✅ Saved (Id: {id})";
+
+            // Hide prompt + clear candidate so it won't re-show on re-render
+            DismissDecisionPrompt();
+        }
+        catch (Exception ex)
+        {
+            _decisionSaveStatus = $"❌ Save failed: {ex.Message}";
+        }
+    }
+
     private async Task AddUserMessageWithFilesAsync(ChatInput.ChatSendRequest request)
     {
         if (_busy) return;
 
         _busy = true;
+        _decisionSaveStatus = null;
         await InvokeAsync(StateHasChanged);
 
         chatSuggestions?.Clear();
@@ -520,6 +562,10 @@
                 messages = msgs.ToList();
                 await InvokeAsync(StateHasChanged);
             }
+
+            // ✅ after send completes, show the UI-only decision prompt banner (if any)
+            _showDecisionPrompt = ChatService.LastDecisionCandidate is not null;
+            await InvokeAsync(StateHasChanged);
 
             selectedConversationId = ChatService.ActiveConversationId;
             ChatContext.ConversationId = selectedConversationId;
@@ -559,6 +605,11 @@
         chatOptions.ConversationId = null;
         statefulMessageCount = 0;
         chatSuggestions?.Clear();
+
+        // clear decision UI
+        _showDecisionPrompt = false;
+        _decisionSaveStatus = null;
+        ChatService.LastDecisionCandidate = null;
 
         await ReloadConversationsAsync();
 
