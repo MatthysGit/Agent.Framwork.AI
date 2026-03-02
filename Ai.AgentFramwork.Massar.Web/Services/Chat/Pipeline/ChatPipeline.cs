@@ -1,20 +1,70 @@
 ﻿using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Ai.AgentFramwork.Massar.Web.Agents;
 using Ai.AgentFramwork.Massar.Web.Services.Chat;
 using Ai.AgentFramwork.Massar.Web.Tools;
 
 namespace Ai.AgentFramwork.Massar.Web.Services.Chat.Pipeline;
 
+/// <summary>
+/// Orchestrates a single chat turn:
+/// 1) Applies policy gates (e.g., individual compensation).
+/// 2) Routes the request to the correct agent/mode (doc search/edit, SQL, chart, or general).
+/// 3) Executes the chosen path and shapes output into the UI contract (JSON for doc tools, markdown for others).
+///
+/// NOTE:
+/// - DocSearch/DocEdit paths intentionally return JSON unchanged (attachments contract).
+/// - SQL paths are forced to execute without clarification questions.
+/// - Chart mode uses SQL -> strict JSON -> chart image; with table fallback.
+/// </summary>
 public sealed class ChatPipeline
 {
+    // ----------------------------
+    // Dependencies (injected)
+    // ----------------------------
+
+    /// <summary>
+    /// Router determines which agent/mode to use (e.g., chart vs. normal, SQL agent vs. general).
+    /// Typically implemented via an LLM prompt that emits a structured decision.
+    /// </summary>
     private readonly RouterAgent _router;
+
+    /// <summary>
+    /// Tool that calls specialist agents by name and returns their final response.
+    /// </summary>
     private readonly AgentCallerTool _caller;
+
+    /// <summary>
+    /// Chart rendering tools (bar/pie/line/etc.) that produce PNGs and return a URL.
+    /// </summary>
     private readonly ChatTools _chartTools;
+
+    /// <summary>
+    /// Document search tool; returns JSON in your attachment schema.
+    /// </summary>
     private readonly DocumentSearchTool _docSearchTool;
+
+    /// <summary>
+    /// Document edit tool; returns JSON in your attachment schema.
+    /// </summary>
     private readonly DocumentEditTool _docEditTool;
+
+    /// <summary>
+    /// Retrieves the current conversation ID used by doc tools.
+    /// </summary>
     private readonly Func<Guid> _getConversationId;
+
+    /// <summary>
+    /// Authorization gate: whether the current user can see individual compensation.
+    /// (Aggregated compensation is usually allowed; individual is blocked unless authorized.)
+    /// </summary>
     private readonly Func<Task<bool>> _canViewCompensationAsync;
+
+    /// <summary>
+    /// Authorization gate for privileged operations (your comment indicates "RoleId == 3",
+    /// but you later moved it to DB-driven PrivilegedPPI. This delegate abstracts that detail).
+    /// </summary>
     private readonly Func<Task<bool>> _isPrivilegedAsync; // RoleId == 3
 
     public ChatPipeline(
@@ -25,7 +75,7 @@ public sealed class ChatPipeline
         DocumentEditTool docEditTool,
         Func<Guid> getConversationId,
         Func<Task<bool>> canViewCompensationAsync,
-        Func<Task<bool>> isPrivilegedAsync)  
+        Func<Task<bool>> isPrivilegedAsync)
     {
         _router = router;
         _caller = caller;
@@ -37,11 +87,29 @@ public sealed class ChatPipeline
         _isPrivilegedAsync = isPrivilegedAsync;
     }
 
+    /// <summary>
+    /// Final output returned to the chat service/UI.
+    /// - Text: final assistant content (markdown, JSON, etc. depending on path)
+    /// - RoutedAgent: the agent name chosen/executed (or "PolicyGuard")
+    /// - RouterReason: explanation from the router (or policy reason)
+    /// </summary>
     public sealed record PipelineResult(string Text, string RoutedAgent, string RouterReason);
 
+    /// <summary>
+    /// Executes one user turn end-to-end.
+    /// IMPORTANT ORDER:
+    /// 1) Policy gate(s) (must happen before routing/tools)
+    /// 2) Router decision
+    /// 3) Execute chosen path (doc, chart, sql, default agent)
+    /// 4) Optional PPI pass (currently stubbed to no-op)
+    /// </summary>
     public async Task<PipelineResult> ExecuteAsync(string userText, CancellationToken ct = default)
     {
-        // 🔒 Sensitive compensation gate (must run BEFORE routing/tools)
+        // --------------------------------------------------------------------
+        // 🔒 Sensitive compensation gate (MUST run BEFORE routing/tools)
+        //
+        // This prevents leakage even if the router misroutes or tools respond oddly.
+        // --------------------------------------------------------------------
         if (IsIndividualCompensationQuestion(userText))
         {
             var allowed = await _canViewCompensationAsync();
@@ -54,10 +122,18 @@ public sealed class ChatPipeline
                     RouterReason: "Blocked: individual compensation request");
             }
         }
-        
+
+        // Total time for this pipeline execution (for diagnostics)
         var swTotal = System.Diagnostics.Stopwatch.StartNew();
+
+        // Time spent in routing only
         var swRoute = System.Diagnostics.Stopwatch.StartNew();
 
+        // Router decides:
+        // - r.Agent (which specialist)
+        // - r.Mode (e.g., "chart" vs "normal")
+        // - r.ChartType (if chart mode)
+        // - r.Reason (explain why)
         var r = await _router.RouteAsync(userText, ct);
 
         swRoute.Stop();
@@ -65,33 +141,54 @@ public sealed class ChatPipeline
             $"[ROUTER] mode={r.Mode} agent={r.Agent} chartType={r.ChartType ?? "null"} " +
             $"reason=\"{r.Reason}\" routeMs={swRoute.ElapsedMilliseconds}");
 
-        // Document search/edit are executed via tools so your attachment JSON stays identical.
+        // --------------------------------------------------------------------
+        // Document search/edit are executed directly via tools so the JSON stays
+        // identical to what your attachment/UI expects.
+        // --------------------------------------------------------------------
         if (r.Agent.Equals(ChatAgentFactory.DocumentSearchAgentName, StringComparison.OrdinalIgnoreCase))
         {
             var convoId = _getConversationId();
             var json = await _docSearchTool.SearchDocumentsAsync(convoId, userText);
+
             swTotal.Stop();
             Console.WriteLine($"[PIPELINE] done agent={r.Agent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
+
             return new PipelineResult(json ?? "No relevant information found.", r.Agent, r.Reason);
         }
 
         if (r.Agent.Equals(ChatAgentFactory.DocumentEditAgentName, StringComparison.OrdinalIgnoreCase))
         {
             var convoId = _getConversationId();
+
+            // Infer a stable “edit instruction” label that the edit tool can use
+            // (keeps user input + intent separate).
             var instruction = InferEditInstruction(userText);
+
             var json = await _docEditTool.EditDocumentAsync(convoId, userText, instruction);
+
             swTotal.Stop();
             Console.WriteLine($"[PIPELINE] done agent={r.Agent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
+
             return new PipelineResult(json ?? "No edit result returned.", r.Agent, r.Reason);
         }
 
-        // Chart path: SQL -> parse JSON -> chart tool -> markdown image only
-        // With automatic fallback: if chart validation fails -> ask SQL agent for a table JSON -> render markdown table
+        // --------------------------------------------------------------------
+        // Chart path:
+        // - Force SQL agent to return STRICT chart JSON
+        // - Parse/normalize chart JSON (supports multiple schemas)
+        // - Render chart -> return markdown image
+        // - If chart fails, fallback to SQL table JSON -> markdown table
+        // --------------------------------------------------------------------
         if (r.Mode.Equals("chart", StringComparison.OrdinalIgnoreCase))
         {
+            // Normalize chart type (your renderer wants "bar" for columns)
             var desired = string.IsNullOrWhiteSpace(r.ChartType) ? "column" : r.ChartType!.Trim().ToLowerInvariant();
             if (desired == "bar") desired = "column";
 
+            // Contract-enforcement prompt:
+            // - No follow-up questions allowed
+            // - Must use your SQL tool order rules
+            // - Must output ONLY strict JSON with the specified schema
             var sqlPrompt = string.Format(@"
 You are the SQL agent.
 
@@ -142,12 +239,16 @@ User request:
 
             var sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, sqlPrompt, cancellationToken: ct);
 
+            // Raw output logging is critical because chart parsing is brittle.
             Console.WriteLine("SQL_AGENT_RAW_FOR_CHART:\n" + sql.Text);
 
+            // Extract first JSON object in case the model wrapped JSON in fences or added stray text.
             var jsonOnly = ExtractFirstJsonObject(sql.Text);
             if (string.IsNullOrWhiteSpace(jsonOnly))
             {
                 Console.WriteLine("[SQL_CHART_CONTRACT_VIOLATION] Non-JSON response from SQL agent:\n" + sql.Text);
+
+                // Safe default so chart renderer doesn't crash.
                 jsonOnly = @"{
   ""chartType"": ""column"",
   ""title"": ""No data / SQL agent returned non-JSON"",
@@ -159,18 +260,22 @@ User request:
 
             try
             {
+                // Parse chart JSON and normalize schema variants into ChartPayload.
                 var chart = ParseChartJson(jsonOnly);
                 Console.WriteLine($"CHART_PARSED: type={chart.ChartType}, labels={(chart.Labels?.Count ?? 0)}, values={(chart.Values?.Count ?? 0)}, series={(chart.Series?.Count ?? 0)}");
 
+                // Render and get URL to PNG
                 var url = await CreateChartAsync(chart);
 
                 swTotal.Stop();
                 Console.WriteLine($"[PIPELINE] done agent={ChatAgentFactory.SqlAgentName} mode=chart totalMs={swTotal.ElapsedMilliseconds}");
 
+                // UI contract: return markdown image only
                 return new PipelineResult($"![chart]({url})", ChatAgentFactory.SqlAgentName, r.Reason);
             }
             catch (Exception ex)
             {
+                // If parsing or rendering fails, we attempt a safer table-based fallback.
                 Console.WriteLine("[CHART_FALLBACK] Chart failed: " + ex);
 
                 var tablePrompt = string.Format(@"
@@ -198,13 +303,15 @@ User request:
 
                 var tableJson = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, tablePrompt, cancellationToken: ct);
 
+                // Extract JSON (same reason as above)
                 var tableJsonOnly = ExtractFirstJsonObject(tableJson.Text) ?? tableJson.Text;
 
+                // Convert JSON -> markdown table; if that fails, surface the error.
                 var fallbackMd = TryRenderTableMarkdown(tableJsonOnly, out var tableMd)
                     ? tableMd
                     : $"Chart generation failed and table fallback could not be generated.\n\nError: {ex.Message}";
 
-                // Run PPI on fallback markdown (helps catch number inflation + safety)
+                // Optional post-processing pass (currently stubbed no-op)
                 var checkedFallback = await RunPpiSafeAsync(userText, fallbackMd, ct);
 
                 swTotal.Stop();
@@ -214,8 +321,13 @@ User request:
             }
         }
 
-        // ✅ ENFORCE: If router chose SQL agent for a NON-CHART request, force execution (no clarifying questions).
-        // ✅ Also format as a 1-column markdown table like your screenshot (header + single value).
+        // --------------------------------------------------------------------
+        // ✅ ENFORCE: If router chose SQL agent for a NON-CHART request, force execution
+        // (no clarifying questions), then format as a 1-column markdown table.
+        //
+        // This is specifically to prevent the SQL agent from responding with
+        // "Could you provide more context?".
+        // --------------------------------------------------------------------
         if (r.Agent.Equals(ChatAgentFactory.SqlAgentName, StringComparison.OrdinalIgnoreCase) &&
             !r.Mode.Equals("chart", StringComparison.OrdinalIgnoreCase))
         {
@@ -244,7 +356,7 @@ USER REQUEST:
 
             var sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, enforcedSqlPrompt, cancellationToken: ct);
 
-            // Retry once if it still asked a question
+            // Retry once if it still asked a question (common model failure mode).
             if (LooksLikeClarifyingQuestion(sql.Text))
             {
                 Console.WriteLine("[SQL_RETRY] SQL agent returned a question. Retrying with stricter enforcement.");
@@ -272,10 +384,10 @@ USER REQUEST:
                 sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, retryPrompt, cancellationToken: ct);
             }
 
-            // ✅ Format into the exact simple structure you want (one header, one value row)
+            // UI shaping: force your “single-value” grid/table style
             var tableMdSimple = FormatSqlAnswerAsSingleColumnTable(userText, sql.Text);
 
-            // PPI: keep the table format; if PPI tries to ask questions, keep the table
+            // Optional post-processing pass (currently stubbed no-op)
             var checkedSql = await RunPpiSafeAsync(userText, tableMdSimple, ct);
 
             swTotal.Stop();
@@ -284,7 +396,9 @@ USER REQUEST:
             return new PipelineResult(checkedSql, ChatAgentFactory.SqlAgentName, r.Reason);
         }
 
-        // Default: call chosen agent
+        // --------------------------------------------------------------------
+        // Default: call chosen agent with raw user text
+        // --------------------------------------------------------------------
         var call = await _caller.CallAgentAsync(r.Agent, userText, cancellationToken: ct);
 
         // Skip PPI for doc tools that must return JSON unchanged
@@ -296,7 +410,7 @@ USER REQUEST:
             return new PipelineResult(call.Text, call.AgentName, r.Reason);
         }
 
-        // Run PPI
+        // Run PPI (currently no-op / stub)
         var checkedAnswer = await RunPpiSafeAsync(userText, call.Text, ct);
 
         swTotal.Stop();
@@ -305,6 +419,11 @@ USER REQUEST:
         return new PipelineResult(checkedAnswer, call.AgentName, r.Reason);
     }
 
+    /// <summary>
+    /// Lightweight detector for “individual compensation” questions (block unless authorized).
+    /// This is a heuristic: it may produce false positives/negatives.
+    /// (You also have a richer ClassifyPolicy() below; consider consolidating.)
+    /// </summary>
     private static bool IsIndividualCompensationQuestion(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
@@ -322,10 +441,7 @@ USER REQUEST:
 
         if (!comp) return false;
 
-        // "individual" signals
-        // - possessive name: "james salary", "james's salary"
-        // - pronouns: "his salary", "her salary"
-        // - "what is X salary"
+        // “individual” targeting signals
         var individual =
             t.Contains("what is ") ||
             t.Contains("what's ") ||
@@ -337,15 +453,19 @@ USER REQUEST:
 
         return individual;
     }
+
+    /// <summary>
+    /// Intended place to run PPI checks (post-processing: safety, number inflation, policy).
+    /// Currently returns draft unchanged because this method is static and has no access to _caller.
+    ///
+    /// Recommendation:
+    /// - Make this method instance-based so it can call _caller, OR
+    /// - Pass in a delegate Func&lt;string,string,Task&lt;string&gt;&gt; that invokes PPI agent.
+    /// </summary>
     private static async Task<string> RunPpiSafeAsync(string userText, string draft, CancellationToken ct)
     {
-        // If you haven't registered PPI yet, just return draft.
-        // (Your earlier runtime showed "PpiAgent" sometimes missing.)
         try
         {
-            // Caller tool will throw if agent not registered; we handle below.
-            // NOTE: This method is static, so it can't access _caller.
-            // We'll use a local function pattern via closure in calling sites where needed.
             return draft;
         }
         catch
@@ -354,6 +474,9 @@ USER REQUEST:
         }
     }
 
+    /// <summary>
+    /// Converts a freeform user “edit request” into a stable instruction label used by DocumentEditTool.
+    /// </summary>
     private static string InferEditInstruction(string userText)
     {
         var lower = (userText ?? "").ToLowerInvariant();
@@ -365,30 +488,35 @@ USER REQUEST:
         return "add comments";
     }
 
+    /// <summary>
+    /// Heuristic to detect whether an agent response is trying to ask the user for more context.
+    /// Used to trigger a forced retry for the SQL agent.
+    /// </summary>
     private static bool LooksLikeClarifyingQuestion(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
         var t = text.Trim().ToLowerInvariant();
 
-        // "Could you please clarify..." / "Please specify..." etc
         if (t.Contains("clarify") || t.Contains("please specify") || t.Contains("more context"))
             return true;
 
-        // Ends with '?' and contains "which/what/where" patterns
         if (t.EndsWith("?") && (t.Contains("which ") || t.Contains("what ") || t.Contains("where ") || t.Contains("who ")))
             return true;
 
         return false;
     }
 
-    // ✅ Extract the first {...} JSON object (handles code fences / extra prose)
+    /// <summary>
+    /// Extracts the first JSON object found in a string (handles code fences / extra prose).
+    /// Used for “LLM contract enforcement” when models occasionally add explanation text.
+    /// </summary>
     private static string? ExtractFirstJsonObject(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
 
         var s = text.Trim();
 
-        // remove common code fences
+        // Remove common code fences
         s = s.Replace("```json", "", StringComparison.OrdinalIgnoreCase)
              .Replace("```", "");
 
@@ -413,7 +541,7 @@ USER REQUEST:
     // Chart JSON schema support (native schema + SQL-agent schema normalization)
     private static ChartPayload ParseChartJson(string json)
     {
-        // 1) Try direct deserialize into our expected payload.
+        // 1) Attempt direct deserialize into ChartPayload (your native payload shape).
         try
         {
             var direct = JsonSerializer.Deserialize<ChartPayload>(json, new JsonSerializerOptions
@@ -423,11 +551,13 @@ USER REQUEST:
 
             if (direct is not null && !string.IsNullOrWhiteSpace(direct.ChartType))
             {
+                // Validate single-series schema (Labels+Values)
                 var hasSingle =
                     direct.Labels is { Count: > 0 } &&
                     direct.Values is { Count: > 0 } &&
                     direct.Labels.Count == direct.Values.Count;
 
+                // Validate multi-series schema (Labels+Series[*].Values)
                 var hasMulti =
                     direct.Labels is { Count: > 0 } &&
                     direct.Series is { Count: > 0 } &&
@@ -442,10 +572,10 @@ USER REQUEST:
         }
         catch
         {
-            // fall through
+            // fall through to schema normalization
         }
 
-        // 2) Normalize SQL-agent schema (xAxis/xis.categories + series.data), case-insensitive property names.
+        // 2) Normalize SQL-agent schema: xAxis.categories + series.data.
         try
         {
             using var doc = JsonDocument.Parse(json);
@@ -461,10 +591,12 @@ USER REQUEST:
             if (TryGetPropIgnoreCase(root, "title", out var titleEl) && titleEl.ValueKind == JsonValueKind.String)
                 title = titleEl.GetString() ?? "Chart";
 
+            // Some models might output "xis" accidentally; you support both.
             JsonElement xObj = default;
             if (!(TryGetPropIgnoreCase(root, "xAxis", out xObj) || TryGetPropIgnoreCase(root, "xis", out xObj)))
                 xObj = default;
 
+            // Categories become Labels
             var labels = new List<string>();
             if (xObj.ValueKind == JsonValueKind.Object &&
                 TryGetPropIgnoreCase(xObj, "categories", out var catsEl) &&
@@ -474,6 +606,7 @@ USER REQUEST:
                     labels.Add(c.GetString() ?? "");
             }
 
+            // Axis titles
             var xAxisLabel = "";
             if (xObj.ValueKind == JsonValueKind.Object &&
                 TryGetPropIgnoreCase(xObj, "title", out var xt) &&
@@ -489,6 +622,7 @@ USER REQUEST:
                 yAxisLabel = yt.ValueKind == JsonValueKind.String ? (yt.GetString() ?? "") : yt.ToString();
             }
 
+            // Series normalization
             var seriesList = new List<ChartSeries>();
             if (TryGetPropIgnoreCase(root, "series", out var sEl) && sEl.ValueKind == JsonValueKind.Array)
             {
@@ -518,6 +652,7 @@ USER REQUEST:
                 }
             }
 
+            // If multiple series, force multicolumn (your renderer uses that)
             if (seriesList.Count > 1)
             {
                 return new ChartPayload
@@ -531,6 +666,7 @@ USER REQUEST:
                 };
             }
 
+            // Single series -> use Values
             var single = seriesList.FirstOrDefault();
             return new ChartPayload
             {
@@ -544,6 +680,7 @@ USER REQUEST:
         }
         catch
         {
+            // Hard fallback ensures chart rendering never blows up the UI.
             return new ChartPayload
             {
                 ChartType = "bar",
@@ -554,6 +691,9 @@ USER REQUEST:
         }
     }
 
+    /// <summary>
+    /// Case-insensitive JSON property fetch helper.
+    /// </summary>
     private static bool TryGetPropIgnoreCase(JsonElement obj, string name, out JsonElement value)
     {
         if (obj.ValueKind == JsonValueKind.Object)
@@ -572,12 +712,15 @@ USER REQUEST:
         return false;
     }
 
+    /// <summary>
+    /// Normalizes chart type tokens to the set your ChatTools understands.
+    /// </summary>
     private static string NormalizeChartType(string? t)
     {
         var s = (t ?? "").Trim().ToLowerInvariant();
         return s switch
         {
-            "column" => "bar",
+            "column" => "bar",     // your chart tool uses bar to represent column charts
             "columns" => "bar",
             "bar" => "bar",
             "pie" => "pie",
@@ -591,6 +734,10 @@ USER REQUEST:
         };
     }
 
+    /// <summary>
+    /// Validates that labels and values are consistent and finite.
+    /// Used to fail fast with a useful exception before chart rendering.
+    /// </summary>
     private static void EnsureValidSeries(string[] labels, double[] values, string seriesName)
     {
         if (labels is null) throw new ArgumentNullException(nameof(labels));
@@ -606,6 +753,9 @@ USER REQUEST:
         }
     }
 
+    /// <summary>
+    /// Renders a chart based on ChartPayload. Returns a URL to a PNG.
+    /// </summary>
     private Task<string> CreateChartAsync(ChartPayload p)
     {
         var t = (p.ChartType ?? "").Trim().ToLowerInvariant();
@@ -613,6 +763,7 @@ USER REQUEST:
         var labels = (p.Labels ?? new List<string>()).ToArray();
         var values = (p.Values ?? new List<double>()).ToArray();
 
+        // Validate non-multi charts (multi validates per-series)
         if (!t.Equals("multicolumn", StringComparison.OrdinalIgnoreCase) &&
             !t.Equals("gauge", StringComparison.OrdinalIgnoreCase))
         {
@@ -674,6 +825,9 @@ USER REQUEST:
         };
     }
 
+    /// <summary>
+    /// Multi-series column chart: validates each series and then delegates to chart tools.
+    /// </summary>
     private Task<string> CreateMultiColumnAsync(ChartPayload p, string[] labels)
     {
         var series = p.Series ?? new List<ChartSeries>();
@@ -701,6 +855,11 @@ USER REQUEST:
             height: 500);
     }
 
+    /// <summary>
+    /// Converts a table JSON schema into markdown.
+    /// Expected schema:
+    /// { "title": "...", "columns": ["A","B"], "rows": [ ["x","y"], ... ] }
+    /// </summary>
     private static bool TryRenderTableMarkdown(string json, out string markdown)
     {
         markdown = "";
@@ -750,6 +909,9 @@ USER REQUEST:
         }
     }
 
+    /// <summary>
+    /// Capitalizes the first character (UI helper).
+    /// </summary>
     private static string Cap(string s)
     {
         if (string.IsNullOrWhiteSpace(s)) return s;
@@ -758,14 +920,22 @@ USER REQUEST:
     }
 
     // =========================
-    // ✅ NEW: Simple 1-column table (matches your screenshot)
+    // ✅ Simple 1-column table (matches your screenshot)
     // =========================
+
+    /// <summary>
+    /// Formats SQL result into a simple markdown table:
+    /// | Header |
+    /// |---:|
+    /// | 123 |
+    ///
+    /// Prefers the first integer found anywhere in sqlText.
+    /// </summary>
     private static string FormatSqlAnswerAsSingleColumnTable(string userText, string sqlText)
     {
         var text = (sqlText ?? "").Trim();
         var header = GuessHeader(userText);
 
-        // Always prefer a number if one exists anywhere in the response
         if (TryExtractFirstInteger(text, out var n))
         {
             return
@@ -783,46 +953,140 @@ USER REQUEST:
             $"| {EscapeMd(text).Replace("\n", "<br/>")} |\n";
     }
 
+    /// <summary>
+    /// Best-effort label for the table header based on the question.
+    /// </summary>
     private static string GuessHeader(string userText)
     {
-        var t = (userText ?? "").ToLowerInvariant();
+        var text = (userText ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(text))
+            return "Result";
 
-        if (t.Contains("employee") || t.Contains("employees"))
-            return "Employee Count";
+        var lower = Regex.Replace(text.ToLowerInvariant(), @"\s+", " ");
 
-        if (t.Contains("customer") || t.Contains("customers"))
-            return "Customer Count";
+        // 1) Strong patterns first (non-greedy capture up to common trailing question phrases)
+        // Examples:
+        // "how many employees do we have" -> employees
+        // "how many open tickets are there" -> open tickets
+        // "how many employees in dubai" -> employees (then "in dubai" can be handled elsewhere if you want)
+        var strong = new[]
+        {
+            @"\bhow many\s+(?<thing>.+?)(?:\s+(?:do|does)\s+\w+\s+have|\s+are\s+there|\s+is\s+there|\s+exist|\s+currently|\s+today|\s+right now|\?|$)",
+            @"\bnumber of\s+(?<thing>.+?)(?:\s+(?:do|does)\s+\w+\s+have|\s+are\s+there|\s+is\s+there|\?|$)",
+            @"\bcount(?:\s+of)?\s+(?<thing>.+?)(?:\s+(?:do|does)\s+\w+\s+have|\s+are\s+there|\s+is\s+there|\?|$)",
+            @"\btotal\s+(?<thing>.+?)(?:\s+(?:do|does)\s+\w+\s+have|\s+are\s+there|\s+is\s+there|\?|$)",
+        };
 
-        if (t.Contains("order") || t.Contains("orders"))
-            return "Order Count";
+        foreach (var pat in strong)
+        {
+            var m = Regex.Match(lower, pat, RegexOptions.IgnoreCase);
+            if (!m.Success) continue;
 
-        if (t.Contains("product") || t.Contains("products"))
-            return "Product Count";
+            var thing = CleanupThing(m.Groups["thing"].Value);
+            if (!string.IsNullOrWhiteSpace(thing))
+                return $"{ToTitleCaseSafe(thing)} Count";
+        }
+
+        // 2) Fallback: keyword mapping (safe default)
+        if (lower.Contains("employee")) return "Employee Count";
+        if (lower.Contains("customer")) return "Customer Count";
+        if (lower.Contains("order")) return "Order Count";
+        if (lower.Contains("product")) return "Product Count";
 
         return "Result";
     }
 
+    private static string CleanupThing(string thing)
+    {
+        thing = (thing ?? "").Trim();
+
+        // Remove trailing punctuation
+        thing = thing.TrimEnd('?', '.', '!', ',', ';', ':');
+
+        // If the capture still contains helper phrases, cut them off.
+        // e.g. "employees do we have" -> "employees"
+        // e.g. "orders are there" -> "orders"
+        thing = Regex.Replace(
+            thing,
+            @"\b(do|does)\s+\w+\s+have\b.*$|\bare\s+there\b.*$|\bis\s+there\b.*$",
+            "",
+            RegexOptions.IgnoreCase).Trim();
+
+        // Cut off at common "query modifier" words (you can tune this list)
+        // This keeps headers clean:
+        // "employees in dubai" -> "employees"
+        // "orders by month" -> "orders"
+        thing = Regex.Replace(
+            thing,
+            @"\b(in|for|by|per|with|where|that|who|which|from|between|during|since)\b.*$",
+            "",
+            RegexOptions.IgnoreCase).Trim();
+
+        // If it’s too long, cap it to avoid ugly headers
+        var words = thing.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length > 6)
+            thing = string.Join(' ', words.Take(6));
+
+        return thing.Trim();
+    }
+
+
+    private static string ToTitleCaseSafe(string input)
+    {
+        input = (input ?? "").Trim();
+        if (input.Length == 0) return input;
+
+        var lowerWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "of", "the", "a", "an", "and", "or", "to", "in", "for", "by", "per", "with" };
+
+        var parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < parts.Length; i++)
+        {
+            var w = parts[i].Trim();
+            if (w.Length == 0) continue;
+
+            if (i != 0 && lowerWords.Contains(w))
+            {
+                parts[i] = w.ToLowerInvariant();
+                continue;
+            }
+
+            parts[i] = w.Length == 1
+                ? w.ToUpperInvariant()
+                : char.ToUpperInvariant(w[0]) + w[1..];
+        }
+
+        return string.Join(' ', parts);
+    }
+    
+    /// <summary>
+    /// Extracts the first integer from a string (e.g., "There are 1,234 employees").
+    /// </summary>
     private static bool TryExtractFirstInteger(string text, out long value)
     {
         value = 0;
         if (string.IsNullOrWhiteSpace(text)) return false;
 
-        // Remove thousands separators to simplify parsing
         var cleaned = text.Replace(",", "");
-
-        // Match digits even if stuck to letters, e.g. "There are290 employees"
         var m = System.Text.RegularExpressions.Regex.Match(cleaned, @"(\d+)");
         if (!m.Success) return false;
 
         return long.TryParse(m.Groups[1].Value, out value);
     }
 
+    /// <summary>
+    /// Escapes markdown table-breaking characters.
+    /// </summary>
     private static string EscapeMd(string s)
     {
         if (string.IsNullOrEmpty(s)) return "";
         return s.Replace("|", "\\|").Trim();
     }
 
+    /// <summary>
+    /// Internal normalized chart payload used by CreateChartAsync.
+    /// Supports single-series (Labels+Values) and multi-series (Labels+Series).
+    /// </summary>
     public sealed class ChartPayload
     {
         public string? ChartType { get; set; }
@@ -841,18 +1105,29 @@ USER REQUEST:
         public double? Max { get; set; }
     }
 
+    /// <summary>
+    /// Multi-series chart series definition.
+    /// </summary>
     public sealed class ChartSeries
     {
         public string? Name { get; set; }
         public List<double>? Values { get; set; }
     }
 
-    private sealed record PolicyDecision(
-    bool IsSensitive,
-    bool IsAggregated,
-    string Type,
-    string Reason);
+    // --------------------------------------------------------------------
+    // Policy classification (currently unused by ExecuteAsync in your snippet)
+    // --------------------------------------------------------------------
 
+    private sealed record PolicyDecision(
+        bool IsSensitive,
+        bool IsAggregated,
+        string Type,
+        string Reason);
+
+    /// <summary>
+    /// Richer policy classifier than IsIndividualCompensationQuestion.
+    /// You can unify these so you have ONE source of truth for gating.
+    /// </summary>
     private static PolicyDecision ClassifyPolicy(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -860,7 +1135,6 @@ USER REQUEST:
 
         var t = text.Trim().ToLowerInvariant();
 
-        // Aggregation intent signals (allow)
         var aggregated =
             t.Contains("average") || t.Contains("avg") ||
             t.Contains("median") ||
@@ -874,17 +1148,14 @@ USER REQUEST:
             t.Contains("distribution") ||
             t.Contains("overall") && (t.Contains("salary") || t.Contains("pay") || t.Contains("compensation"));
 
-        // Sensitive topics
         var asksSalary =
             t.Contains("salary") || t.Contains("compensation") || t.Contains("pay") || t.Contains("wage") || t.Contains("bonus") || t.Contains("earn");
 
-        // Direct individual targeting signals
         var individual =
             t.Contains("what is ") || t.Contains("what's ") || t.Contains("how much does ") ||
             t.Contains("his ") || t.Contains("her ") || t.Contains("their ") ||
             t.Contains("'s ") || t.Contains("salary of ") || t.Contains("pay of ") || t.Contains("compensation of ");
 
-        // Other personal data keywords
         var asksBank =
             t.Contains("bank") || t.Contains("account number") || t.Contains("iban") || t.Contains("swift") ||
             t.Contains("routing number") || t.Contains("sort code");
@@ -901,11 +1172,8 @@ USER REQUEST:
         var asksPhoneEmail =
             t.Contains("phone") || t.Contains("mobile") || t.Contains("email") || t.Contains("personal email");
 
-        // If it’s aggregated, allow unless it’s asking for raw PII fields (like “list all bank accounts”)
-        // This rule keeps aggregated stats allowed.
         if (aggregated && (asksSalary || asksBank || asksId || asksAddress || asksPhoneEmail))
         {
-            // If it also looks like "list/show/export all", treat as sensitive anyway.
             if (t.Contains("list") || t.Contains("show all") || t.Contains("export") || t.Contains("download"))
             {
                 return new PolicyDecision(true, false, "SensitiveBulkPII", "Bulk PII export/list request");
@@ -914,15 +1182,12 @@ USER REQUEST:
             return new PolicyDecision(true, true, "AggregatedSensitive", "Aggregated request allowed");
         }
 
-        // Individual compensation should be blocked unless privileged
         if (asksSalary && individual && !aggregated)
             return new PolicyDecision(true, false, "IndividualCompensation", "Individual salary/compensation requested");
 
-        // Other PII types (block unless privileged), unless aggregated stats request
         if ((asksBank || asksId || asksAddress || asksPhoneEmail) && !aggregated)
             return new PolicyDecision(true, false, "PersonalData", "Personal data requested");
 
         return new PolicyDecision(false, aggregated, "None", "Not sensitive");
     }
-    
 }
