@@ -1,0 +1,141 @@
+﻿@page "/admin/agents"
+@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Ai.AgentFramwork.Massar.Web.Services.Admin
+@using MudBlazor
+@inject IAgentService AgentService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<MudPaper Class="pa-4">
+    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+        <MudText Typo="Typo.h5">Agents</MudText>
+
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="AddAsync">
+            Add Agent
+        </MudButton>
+    </MudStack>
+
+    <MudDivider Class="my-3" />
+
+    <MudTable Items="_agents" Hover="true" Dense="true" Bordered="true" Striped="true" Loading="_loading">
+        <HeaderContent>
+            <MudTh>Agent Name</MudTh>
+            <MudTh>Model</MudTh>
+            <MudTh>Active</MudTh>
+            <MudTh>Created On</MudTh>
+            <MudTh></MudTh>
+        </HeaderContent>
+
+        <RowTemplate>
+            <MudTd DataLabel="Agent Name">@context.AgentName</MudTd>
+            <MudTd DataLabel="Model">@context.AgentModel</MudTd>
+            <MudTd DataLabel="Active">
+                <MudChip T="bool"  Color="@(context.IsActive? Color.Success: Color.Default)" Variant="Variant.Outlined" Size="Size.Small">
+                    @(context.IsActive ? "Yes" : "No")
+                </MudChip>
+            </MudTd>
+            <MudTd DataLabel="Created On">@context.CreatedOn.ToString("yyyy-MM-dd")</MudTd>
+            <MudTd>
+                <MudButton Variant="Variant.Text" OnClick="() => EditAsync(context)">
+                    Edit
+                </MudButton>
+            </MudTd>
+        </RowTemplate>
+
+        <NoRecordsContent>
+            <MudText>No agents found.</MudText>
+        </NoRecordsContent>
+    </MudTable>
+</MudPaper>
+
+@code {
+    private bool _loading;
+    private List<Agent> _agents = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _agents = await AgentService.GetAllAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task AddAsync()
+    {
+        var parameters = new DialogParameters
+        {
+            ["Agent"] = null
+        };
+
+        var options = new DialogOptions { CloseButton = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+
+        var dialog = await DialogService.ShowAsync<AgentUpsertDialog>(
+            "Add Agent", parameters, options);
+
+        var result = await dialog.Result;
+        if (result.Canceled) return;
+
+        var agent = (Agent)result.Data;
+
+        try
+        {
+            await AgentService.CreateAsync(agent);
+            Snackbar.Add("Agent created.", Severity.Success);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task EditAsync(Agent row)
+    {
+        var current = await AgentService.GetByNameAsync(row.AgentName);
+        if (current is null)
+        {
+            Snackbar.Add("Agent not found.", Severity.Warning);
+            return;
+        }
+
+        var parameters = new DialogParameters
+        {
+            ["Agent"] = current
+        };
+
+        var options = new DialogOptions { CloseButton = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+
+        var dialog = await DialogService.ShowAsync<AgentUpsertDialog>(
+            "Edit Agent", parameters, options);
+
+        var result = await dialog.Result;
+        if (result.Canceled) return;
+
+        var edited = (Agent)result.Data;
+
+        try
+        {
+            await AgentService.UpdateAsync(edited);
+            Snackbar.Add("Agent updated.", Severity.Success);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+}

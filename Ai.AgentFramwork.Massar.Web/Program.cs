@@ -3,10 +3,12 @@ using Ai.AgentFramwork.Massar.Web.Components;
 using Ai.AgentFramwork.Massar.Web.DBModels;
 using Ai.AgentFramwork.Massar.Web.Models;
 using Ai.AgentFramwork.Massar.Web.Services;
+using Ai.AgentFramwork.Massar.Web.Services.Admin;
 using Ai.AgentFramwork.Massar.Web.Services.ChartQuestions;
 using Ai.AgentFramwork.Massar.Web.Services.Chat;
 using Ai.AgentFramwork.Massar.Web.Services.Chat.charts;
 using Ai.AgentFramwork.Massar.Web.Services.Documents;
+using Ai.AgentFramwork.Massar.Web.Services.DocumentSeach;
 using Ai.AgentFramwork.Massar.Web.Services.Ingestion;
 using Ai.AgentFramwork.Massar.Web.Services.SchemaIntrospection;
 using Ai.AgentFramwork.Massar.Web.Services.Security;
@@ -27,7 +29,6 @@ using OpenAI;
 using OpenAI.Chat;
 using System.Security.Claims;
 using System.Security.Principal;
-using Ai.AgentFramwork.Massar.Web.Services.DocumentSeach;
 using static Ai.AgentFramwork.Massar.Web.DTO.LoginRequestDTO;
  
 
@@ -154,8 +155,17 @@ builder.Services.AddScoped<IDocumentToolService, DocumentToolService>();
 builder.Services.AddScoped<IUnifiedRetrievalService, UnifiedRetrievalService>();
 builder.Services.AddScoped<IChatConversationAttachmentIngestService, ChatConversationAttachmentIngestService>();
 builder.Services.AddScoped<IChatContext, ChatContext>();
+builder.Services.AddSingleton<IChatClientFactory, OpenAIChatClientFactory>();
+
+// ✅ Holds the runtime mapping: agentName -> modelKey
+builder.Services.AddSingleton<IAgentModelSelector, AgentModelSelector>();
+
+// ✅ Registry: stores builders + caches built agents per (agentName, modelKey)
+// If you previously had it Scoped, keep it Scoped.
+builder.Services.AddScoped<IAgentRegistry, AgentRegistry>();
 
 
+builder.Services.AddScoped<IAgentService, AgentService>();
 
 builder.Services.AddScoped<IEmbeddingProvider, OpenAiEmbeddingProvider>();
 builder.Services.AddScoped<IUnifiedDocumentSearchService, UnifiedDocumentSearchService>();

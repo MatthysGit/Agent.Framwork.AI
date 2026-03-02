@@ -11,6 +11,8 @@ public partial class AppDbContext : DbContext
     {
     }
 
+    public virtual DbSet<Agent> Agents { get; set; }
+
     public virtual DbSet<AppUser> AppUsers { get; set; }
 
     public virtual DbSet<ChatAttachmentBlob> ChatAttachmentBlobs { get; set; }
@@ -73,6 +75,20 @@ public partial class AppDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<Agent>(entity =>
+        {
+            entity.HasKey(e => e.AgentName).HasName("PK__Agents__B265ECF42E224943");
+
+            entity.Property(e => e.AgentName)
+                .HasMaxLength(50)
+                .IsUnicode(false);
+            entity.Property(e => e.AgentModel)
+                .HasMaxLength(50)
+                .IsUnicode(false);
+            entity.Property(e => e.CreatedOn).HasDefaultValueSql("(sysdatetime())");
+            entity.Property(e => e.IsActive).HasDefaultValue(true);
+        });
+
         modelBuilder.Entity<AppUser>(entity =>
         {
             entity.HasKey(e => e.UserId);

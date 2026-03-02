@@ -1,0 +1,81 @@
+﻿@using Ai.AgentFramwork.Massar.Web.DBModels
+@using MudBlazor
+
+<MudDialog>
+    <DialogContent>
+        <MudForm @ref="_form">
+
+            <MudText Typo="Typo.h6">@(_isEdit ? "Edit Agent" : "Add Agent")</MudText>
+
+            <MudTextField @bind-Value="_model.AgentName"
+                          Label="Agent Name"
+                          Disabled="_isEdit"
+                          Required="true"
+                          RequiredError="Agent Name is required."
+                          Immediate="true" />
+
+            <MudTextField @bind-Value="_model.AgentModel"
+                          Label="Agent Model"
+                          Required="true"
+                          RequiredError="Agent Model is required."
+                          Immediate="true" />
+
+            <MudSwitch T="bool" @bind-Checked="_model.IsActive" Color="Color.Primary">
+                Active
+            </MudSwitch>
+
+            @if (_isEdit)
+            {
+                <MudText Typo="Typo.caption" Class="mt-2">
+                    Created: @_model.CreatedOn.ToString("yyyy-MM-dd HH:mm:ss") (stored value)
+                </MudText>
+            }
+
+        </MudForm>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveAsync">
+            Save
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Agent? Agent { get; set; }
+
+    private MudForm? _form;
+    private bool _isEdit => Agent is not null;
+
+    // local copy so cancel doesn't mutate caller state
+    private Agent _model = new();
+
+    protected override void OnInitialized()
+    {
+        _model = Agent is null
+            ? new Agent { IsActive = true, AgentModel = "" }
+            : new Agent
+            {
+                AgentName = Agent.AgentName,
+                AgentModel = Agent.AgentModel,
+                IsActive = Agent.IsActive,
+                CreatedOn = Agent.CreatedOn
+            };
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private async Task SaveAsync()
+    {
+        if (_form is null) return;
+
+        await _form.Validate();
+        if (!_form.IsValid) return;
+
+        // return the model to the caller; caller decides create vs update
+        MudDialog.Close(DialogResult.Ok(_model));
+    }
+}

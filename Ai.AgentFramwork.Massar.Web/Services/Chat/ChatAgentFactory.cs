@@ -1,14 +1,12 @@
-﻿using Ai.AgentFramwork.Massar.Web.Agents;
+﻿// File: Services/Chat/ChatAgentFactory.cs
+using Ai.AgentFramwork.Massar.Web.Agents;
 using Ai.AgentFramwork.Massar.Web.DBModels;
 using Ai.AgentFramwork.Massar.Web.Services.Chat.Pipeline;
 using Ai.AgentFramwork.Massar.Web.Tools;
-using Microsoft.Agents.AI;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using OpenAI;
 using OpenAI.Chat;
 using System.ComponentModel;
 using ChatMessage = Microsoft.Extensions.AI.ChatMessage;
@@ -28,21 +26,27 @@ public sealed class ChatAgentFactory
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
     private readonly IConfiguration _configuration;
     private readonly IAgentRegistry _registry;
-    private readonly IServiceProvider _services;
+
+    // ✅ runtime model + client creation
+    private readonly IChatClientFactory _chatClientFactory;
+    private readonly IAgentModelSelector _modelSelector;
 
     public ChatAgentFactory(
         IConfiguration configuration,
         IAgentRegistry registry,
-        IServiceProvider services,
-        IDbContextFactory<AppDbContext> dbFactory)
+        IDbContextFactory<AppDbContext> dbFactory,
+        IChatClientFactory chatClientFactory,
+        IAgentModelSelector modelSelector)
     {
         _configuration = configuration;
         _registry = registry;
-        _services = services;
-        _dbFactory = dbFactory; // ✅ FIXED
+        _dbFactory = dbFactory;
+
+        _chatClientFactory = chatClientFactory;
+        _modelSelector = modelSelector;
     }
 
-    // --- NEW: Pipeline builder (AI Router + deterministic execution) ---
+    // --- Pipeline builder (AI Router + deterministic execution) ---
     public ChatPipeline BuildPipeline(
         ChatTools tools,
         ChatSession session,
@@ -52,32 +56,43 @@ public sealed class ChatAgentFactory
         DocumentEditTool docEditTool,
         Action<string>? onRoute = null)
     {
-        var client = new OpenAIClient(_configuration["OpenAI:Key"] ?? "");
-        var chatCompletionClient = client.GetChatClient("gpt-4.1");
-
         var sqlServerSelectTool = new SqlServerSelectTool((IConfigurationRoot)_configuration, auth);
         var docSearchToolWrapper = new DocumentSearchToolWrapper(docSearchTool, session);
 
-        // Register specialized agents
-        _registry.Register(SqlAgentName, new SqlAgent().Build(chatCompletionClient, SqlAgentName, sqlServerSelectTool));
-        _registry.Register(LlmChatAgentName, new GeneralChatAgent().Build(chatCompletionClient, LlmChatAgentName, tools));
-        _registry.Register(DocumentSearchAgentName, new DocumentSearchAgent().Build(chatCompletionClient, DocumentSearchAgentName, docSearchToolWrapper));
-        _registry.Register(DocumentEditAgentName, new DocumentEditAgent().Build(chatCompletionClient, DocumentEditAgentName, docEditTool));
-        _registry.Register(PpiAgentName, new PpiAgent().Build(chatCompletionClient, PpiAgentName));
+        // ✅ Register specialized agent BUILDERS (not pre-built agents)
+        _registry.Register(SqlAgentName, (sp, chatClient) =>
+            new SqlAgent().Build(chatClient, SqlAgentName, sqlServerSelectTool));
 
+        _registry.Register(LlmChatAgentName, (sp, chatClient) =>
+            new GeneralChatAgent().Build(chatClient, LlmChatAgentName, tools));
+
+        _registry.Register(DocumentSearchAgentName, (sp, chatClient) =>
+            new DocumentSearchAgent().Build(chatClient, DocumentSearchAgentName, docSearchToolWrapper));
+
+        _registry.Register(DocumentEditAgentName, (sp, chatClient) =>
+            new DocumentEditAgent().Build(chatClient, DocumentEditAgentName, docEditTool));
+
+        _registry.Register(PpiAgentName, (sp, chatClient) =>
+            new PpiAgent().Build(chatClient, PpiAgentName));
+
+        // ✅ Caller chooses model at runtime per agent
         var caller = new AgentCallerTool(
             _registry,
+            _modelSelector,
             historyProvider: () => ChatMessageWindow.ToSafeTextOnlyMessages(session.Messages, takeLast: 40),
             onRoute: onRoute
         );
 
+        // ✅ Router uses its own model (runtime)
+        var routerModelKey = _modelSelector.GetModelForAgent(OrchestratorAgentName);
+        ChatClient routerClient = _chatClientFactory.Create(routerModelKey);
+
         var router = new Ai.AgentFramwork.Massar.Web.Agents.RouterAgent(
-            chatCompletionClient,
+            routerClient,
             historyProvider: () => ChatMessageWindow.ToSafeTextOnlyMessages(session.Messages, takeLast: 40)
         );
 
         Guid GetConversationIdGuid() => session.ActiveConversationId ?? Guid.Empty;
-
         Task<bool> IsPrivileged() => IsPrivilegedAsync(auth, _dbFactory);
 
         return new ChatPipeline(
@@ -92,7 +107,7 @@ public sealed class ChatAgentFactory
         );
     }
 
-    // ✅ NEW EF-BACKED PRIVILEGE CHECK
+    // ✅ EF-BACKED PRIVILEGE CHECK
     private static async Task<bool> IsPrivilegedAsync(
         AuthenticationStateProvider auth,
         IDbContextFactory<AppDbContext> dbFactory)
@@ -100,7 +115,6 @@ public sealed class ChatAgentFactory
         var state = await auth.GetAuthenticationStateAsync();
         var user = state.User;
 
-        // 1️⃣ Get role ids from claims (unchanged logic)
         var roleIds = user.Claims
             .Where(c => c.Type is "roleId" or "RoleId" or System.Security.Claims.ClaimTypes.Role)
             .Select(c => c.Value)
@@ -113,7 +127,6 @@ public sealed class ChatAgentFactory
         if (roleIds.Length == 0)
             return false;
 
-        // 2️⃣ Query privileged roles from DB
         await using var db = await dbFactory.CreateDbContextAsync();
 
         return await db.Roles
