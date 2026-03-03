@@ -17,6 +17,25 @@
     margin: 0 auto;
 }
 
+.new-chat-text-chat {
+    background: none;
+    border: none;
+    padding: 0;
+    font-weight: 400;
+    color: rgba(0, 0, 0, 0.70);
+    align-self:flex-start;
+    margin-left:3rem;
+    text-underline-offset:3px;
+}
+
+.underline-text {
+    text-decoration: underline;
+}
+
+.no-underline {
+    text-decoration: none;
+    font-size:larger;
+}
 
 
 /*.chathistory {*/
