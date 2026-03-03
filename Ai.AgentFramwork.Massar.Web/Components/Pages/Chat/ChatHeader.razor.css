@@ -19,3 +19,9 @@ h1 {
         position: sticky;
     }
 }
+
+.chat-header-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}

@@ -1,0 +1,928 @@
+﻿@* File: Components/Pages/Chat/ImproveConversationDialog.razor *@
+@using MudBlazor
+@using System.Reflection
+@using Microsoft.EntityFrameworkCore
+@using Ai.AgentFramwork.Massar.Web.Services.Chat
+@using Ai.AgentFramwork.Massar.Web.DTO
+@using Ai.AgentFramwork.Massar.Web.DBModels
+
+@inject Ai.AgentFramwork.Massar.Web.Services.Chat.ChatService ChatService
+@inject Ai.AgentFramwork.Massar.Web.Services.Chat.IImproveConversationService ImproveService
+@inject Ai.AgentFramwork.Massar.Web.Services.Email.IOffice365EmailService EmailService
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<MudDialog Class="pa-2" Style="min-width:900px; min-height:560px;">
+    <DialogContent>
+        <MudStack Spacing="2">
+@* 
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                ConversationId: @ConversationId • Messages: @ChatService.Messages.Count
+            </MudText> *@
+
+            @if (_busy)
+            {
+                <MudProgressLinear Indeterminate="true" />
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Generating results...</MudText>
+            }
+            else if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error" Dense="true">@_error</MudAlert>
+            }
+            else if (_result is null)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true">No result returned.</MudAlert>
+            }
+            else
+            {
+@*                 <MudTabs Rounded="true" Elevation="0">
+                    <MudTabPanel Text="Email"> *@
+
+                        <MudStack Spacing="2">
+
+                            @* Compact, professional email header *@
+                            <MudPaper Class="mail-header" Elevation="0" Outlined="true">
+                                <MudStack Spacing="1">
+                                    <MudTextField T="string"
+                                                  @bind-Value="_emailTo"
+                                                  Label="To"
+                                                  Style="font-size:small"
+                                                  Variant="Variant.Outlined"
+                                                  Placeholder="someone@company.com"
+                                                  Disabled="@_sendingEmail"
+                                                  Immediate="true"
+                                                  Validation="ValidateEmails"
+                                                  Dense="true"
+                                                  Margin="Margin.Dense"
+                                                  Class="email-field thin-field"/>
+
+                                    <MudTextField T="string"
+                                                  @bind-Value="_emailCc"
+                                                  Label="Cc"
+                                                  Style="font-size:small"
+                                                  Variant="Variant.Outlined"
+                                                  Placeholder="someone@company.com"
+                                                  Disabled="@_sendingEmail"
+                                                  Immediate="true"
+                                                  Validation="ValidateOptionalEmails"
+                                                  Dense="true"
+                                                  Margin="Margin.Dense"
+                                                  Class="email-field thin-field"/>
+
+                                    <MudTextField T="string"
+                                                  @bind-Value="_emailSubject"
+                                                  Label="Subject"
+                                                  Style="font-size:small"
+                                                  Variant="Variant.Outlined"
+                                                  Disabled="@_sendingEmail"
+                                                  Dense="true"
+                                                  Margin="Margin.Dense"
+                                                  Class="thin-field"/>
+                                </MudStack>
+                            </MudPaper>
+
+                            @* Preview header *@
+
+
+                            @* Bigger preview area *@
+                            <MudPaper Class="mail-preview" Elevation="0" Outlined="true">
+                                @if (!string.IsNullOrWhiteSpace(_emailMarkdown))
+                                {
+                                    <div class="email-preview">
+                                        @((MarkupString)_emailPreviewHtml)
+                                    </div>
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.body2" Color="Color.Secondary">No email body.</MudText>
+                                }
+                            </MudPaper>
+
+                            @* Editor is secondary *@
+                            <MudExpansionPanels Elevation="0" Outlined="true">
+                                <MudExpansionPanel Text="Edit email text (Markdown)">
+                                    <MudTextField @bind-Value="_emailMarkdown"
+                                                  Label="Body (Markdown)"
+                                                  Variant="Variant.Outlined"
+                                                  Lines="10"
+                                                  AutoGrow="true"
+                                                  Disabled="@_sendingEmail"/>
+                                </MudExpansionPanel>
+                            </MudExpansionPanels>
+
+                            <MudStack Direction="Row" Style="margin-left:20px" Spacing="1" AlignItems="AlignItems.Start" Class="preview-header">
+                                @* <MudText Typo="Typo.subtitle2">Preview</MudText> *@
+                                <MudSpacer/>
+                                <MudButton Variant="Variant.Outlined"
+                                           Size="Size.Small"
+                                           Disabled="@_sendingEmail"
+                                           OnClick="RefreshPreview">
+                                    Refresh preview
+                                </MudButton>
+                            </MudStack>
+
+                            @if (!string.IsNullOrWhiteSpace(_draftSaveError))
+                            {
+                                <MudAlert Severity="Severity.Error" Dense="true">@_draftSaveError</MudAlert>
+                            }
+
+                            @if (!string.IsNullOrWhiteSpace(_draftSaveSuccess))
+                            {
+                                <MudAlert Severity="Severity.Success" Dense="true">
+                                    @_draftSaveSuccess
+                                    @if (!string.IsNullOrWhiteSpace(_draftWebLink))
+                                    {
+                                        <span> • </span>
+                                        <MudLink Href="@_draftWebLink" Target="_blank">Open draft</MudLink>
+                                    }
+                                </MudAlert>
+                            }
+
+                            @if (!string.IsNullOrWhiteSpace(_emailSendError))
+                            {
+                                <MudAlert Severity="Severity.Error" Dense="true">@_emailSendError</MudAlert>
+                            }
+
+                            @if (!string.IsNullOrWhiteSpace(_emailSendSuccess))
+                            {
+                                <MudAlert Severity="Severity.Success" Dense="true">@_emailSendSuccess</MudAlert>
+                            }
+
+                            <MudStack Direction="Row" Spacing="1" AlignItems="AlignItems.Center" Class="mail-actions">
+                                <MudButton Color="Color.Primary"
+                                           Variant="Variant.Filled"
+                                           Disabled="@(!_canSendEmail || _sendingEmail)"
+                                           OnClick="SendEmailAsync">
+                                    @if (_sendingEmail)
+                                    {
+                                        <MudProgressCircular Indeterminate="true" Size="Size.Small" Class="mr-2"/>
+                                        <span>Sending</span>
+                                    }
+                                    else
+                                    {
+                                        <span>Send Email</span>
+                                    }
+                                </MudButton>
+
+                                @* Replaced Reset draft with Save as draft *@
+                                <MudButton Variant="Variant.Outlined"
+                                           Size="Size.Small"
+                                           Disabled="@(!_canSendEmail || _sendingEmail)"
+                                           OnClick="SaveDraftAsync">
+                                    Save as draft mail
+                                </MudButton>
+
+                                <MudSpacer/>
+
+                                @*           <MudText Typo="Typo.caption" Color="Color.Secondary" Class="hint-right">
+                                    From address is configured server-side (Graph:FromUser).
+                                </MudText> *@
+                            </MudStack>
+
+                            @*                             @if (!string.IsNullOrWhiteSpace(_signatureName))
+                            {
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                    Signature: @_signatureName
+                                </MudText>
+                            } *@
+                        </MudStack>
+    @*                 </MudTabPanel> *@
+
+                @*     <MudTabPanel Text="Overview">
+                        <MudStack Spacing="2">
+
+                            @if (!string.IsNullOrWhiteSpace(ResultSummary))
+                            {
+                                <MudText Typo="Typo.subtitle2">Summary</MudText>
+                                <MudPaper Class="pa-3" Elevation="0" Outlined="true">
+                                    <MudText Typo="Typo.body2" Style="white-space:pre-wrap">@ResultSummary</MudText>
+                                </MudPaper>
+                            }
+
+                            <MudText Typo="Typo.subtitle2">Key decisions</MudText>
+                            <MudPaper Class="pa-3" Elevation="0" Outlined="true">
+                                @if (DecisionItems.Count > 0)
+                                {
+                                    <MudList T="string" Dense="true">
+                                        @foreach (var d in DecisionItems)
+                                        {
+                                            <MudListItem T="string" Text="@d" />
+                                        }
+                                    </MudList>
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.body2" Color="Color.Secondary">No decisions detected.</MudText>
+                                }
+                            </MudPaper>
+
+                            <MudText Typo="Typo.subtitle2">Action items</MudText>
+                            <MudPaper Class="pa-3" Elevation="0" Outlined="true">
+                                @if (ActionItems.Count > 0)
+                                {
+                                    <MudList T="string" Dense="true">
+                                        @foreach (var a in ActionItems)
+                                        {
+                                            <MudListItem T="string" Text="@a" />
+                                        }
+                                    </MudList>
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.body2" Color="Color.Secondary">No action items detected.</MudText>
+                                }
+                            </MudPaper>
+
+                            @if (OpenQuestions.Count > 0)
+                            {
+                                <MudText Typo="Typo.subtitle2">Open questions</MudText>
+                                <MudPaper Class="pa-3" Elevation="0" Outlined="true">
+                                    <MudList T="string" Dense="true">
+                                        @foreach (var q in OpenQuestions)
+                                        {
+                                            <MudListItem T="string" Text="@q" />
+                                        }
+                                    </MudList>
+                                </MudPaper>
+                            }
+
+                        </MudStack>
+                    </MudTabPanel> *@
+
+@*                     <MudTabPanel Text="Spec">
+                        <MudStack Spacing="1">
+                            <MudText Typo="Typo.subtitle2">Short spec</MudText>
+                            <MudPaper Class="pa-3" Elevation="0" Outlined="true">
+                                <MudText Typo="Typo.body2" Style="white-space:pre-wrap">
+                                    @(ResultSpec ?? "No spec returned.")
+                                </MudText>
+                            </MudPaper>
+                        </MudStack>
+                    </MudTabPanel> *@
+
+            @*     </MudTabs> *@
+            }
+
+        </MudStack>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="Close" Disabled="@(_busy || _sendingEmail)">Close</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ReloadAsync" Disabled="@(_busy || _sendingEmail)">
+            Refresh
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    /* Professional email header container */
+    .mail-header {
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: rgba(0,0,0,0.02);
+    }
+
+    /* Thinner outlined fields WITHOUT label overlap (use padding, not label transforms) */
+    .thin-field .mud-input-root {
+        min-height: 24px;
+       
+    }
+
+    /* Tighten vertical padding + add left padding so text doesn't sit under label/notch */
+    .thin-field .mud-input-slot {
+        padding-top: 6px !important;
+        padding-bottom: 6px !important;
+        padding-left: 14px !important; /* key fix */
+        font-size: small;
+    }
+
+    /* Also pad the actual input element a touch (MudBlazor varies by version) */
+    .thin-field input,
+    .thin-field textarea {
+        padding-left: 2px !important;
+    }
+
+    /* If the outline notch/legend is tight, give it room */
+    .thin-field .mud-input-outlined-border {
+        border-radius: 10px;
+    }
+
+    /* Preview header spacing */
+    .preview-header {
+        margin-top: 2px;
+    }
+
+    /* Bigger preview area for more reading space */
+    .mail-preview {
+        padding: 12px;
+        border-radius: 10px;
+        min-height: 360px;
+        max-height: 420px;
+        overflow: auto;
+        background: #fff;
+    }
+
+    /* Preview should look like an email client even if app/global CSS changes headings/lists */
+    .email-preview {
+        font-family: Arial, sans-serif;
+        font-size: 14px;
+        line-height: 1.45;
+        color: #111;
+    }
+
+        /* Reset common global overrides */
+        .email-preview * {
+            letter-spacing: normal !important;
+            text-transform: none !important;
+        }
+
+        .email-preview p {
+            margin: 0 0 12px 0;
+        }
+
+        .email-preview h1,
+        .email-preview h2,
+        .email-preview h3,
+        .email-preview h4,
+        .email-preview h5,
+        .email-preview h6 {
+            margin: 16px 0 8px 0;
+            font-weight: 700;
+            line-height: 1.25;
+        }
+
+        /* Make sure bullets render (many CSS frameworks remove list-style) */
+        .email-preview ul,
+        .email-preview ol {
+            margin: 0 0 12px 24px;
+            padding: 0;
+            list-style-position: outside;
+        }
+
+        .email-preview ul {
+            list-style-type: disc;
+        }
+
+        .email-preview ol {
+            list-style-type: decimal;
+        }
+
+        .email-preview li {
+            margin: 4px 0;
+        }
+
+        .email-preview hr {
+            border: 0;
+            border-top: 1px solid #ddd;
+            margin: 16px 0;
+        }
+
+        /* Prevent massive line spacing caused by global typography */
+        .email-preview br {
+            line-height: 1.45;
+        }
+
+    .mail-actions .hint-right {
+        white-space: nowrap;
+        opacity: 0.9;
+    }
+</style>
+
+@code {
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Guid ConversationId { get; set; }
+
+    private bool _busy = true;
+    private bool _loadedOnce;
+    private string? _error;
+
+    private string _emailPreviewHtml = "";
+
+    // Keep the raw DTO as object so we don't hard-bind to a shape.
+    private object? _result;
+
+    private string _emailTo = "";
+    private string _emailCc = "";
+    private string _emailSubject = "";
+    private string _emailMarkdown = "";
+
+    private string? _signatureName;
+
+    private bool _sendingEmail;
+    private string? _emailSendError;
+    private string? _emailSendSuccess;
+
+    private string? _draftSaveError;
+    private string? _draftSaveSuccess;
+    private string? _draftWebLink;
+
+    private bool _canSendEmail =>
+        SplitEmails(_emailTo).Length > 0 &&
+        !string.IsNullOrWhiteSpace(_emailSubject) &&
+        !string.IsNullOrWhiteSpace(_emailMarkdown);
+
+    protected override void OnInitialized()
+    {
+        _busy = true;
+        _error = null;
+        _result = null;
+    }
+
+    private string? ValidateEmails(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "At least one email is required.";
+
+        var emails = value
+            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(e => e.Trim())
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .ToList();
+
+        foreach (var email in emails)
+        {
+            try
+            {
+                _ = new System.Net.Mail.MailAddress(email);
+            }
+            catch
+            {
+                return $"Invalid email: {email}";
+            }
+        }
+
+        return null;
+    }
+
+    private void RefreshPreview()
+    {
+        _emailPreviewHtml = RenderEmailBodyHtml(_emailMarkdown ?? "");
+    }
+
+    private string? ValidateOptionalEmails(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null; // ✅ optional, so empty is valid
+
+        var emails = value
+            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(e => e.Trim())
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .ToList();
+
+        foreach (var email in emails)
+        {
+            try
+            {
+                _ = new System.Net.Mail.MailAddress(email);
+            }
+            catch
+            {
+                return $"Invalid email: {email}";
+            }
+        }
+
+        return null;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !_loadedOnce)
+        {
+            _loadedOnce = true;
+            await LoadAsync();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        await LoadAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadAsync()
+    {
+        _busy = true;
+        _error = null;
+        _result = null;
+
+        _emailSendError = null;
+        _emailSendSuccess = null;
+        _draftSaveError = null;
+        _draftSaveSuccess = null;
+        _draftWebLink = null;
+
+        try
+        {
+            var userId = await ChatService.GetMyUserIdAsync();
+            if (string.IsNullOrWhiteSpace(userId))
+            {
+                _error = "User not authenticated.";
+                return;
+            }
+
+            if (ConversationId == Guid.Empty)
+            {
+                _error = "ConversationId is empty (Guid.Empty). The header must pass a real conversation id.";
+                return;
+            }
+
+            // ✅ Load signature from AppUsers table
+            _signatureName = await GetUserDisplayNameAsync(userId);
+
+            ImproveConversationResultDto dto = await ImproveService.ImproveAsync(
+                userId, ConversationId, options: null, CancellationToken.None);
+
+            _result = dto;
+
+            _emailSubject = FirstString(dto,
+                "EmailSubject", "Subject", "DraftSubject", "SuggestedEmailSubject", "MailSubject")
+                ?? "Conversation Summary";
+
+            var md = FirstString(dto,
+                "EmailBodyMarkdown", "BodyMarkdown", "DraftBodyMarkdown", "SuggestedEmailBodyMarkdown", "MailBodyMarkdown")
+                ?? BuildFallbackEmailMarkdown(dto, _signatureName);
+
+            // ✅ Replace placeholder signature with real name
+            _emailMarkdown = ApplySignature(md, _signatureName);
+
+            RefreshPreview();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.ToString();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SaveDraftAsync()
+    {
+        _draftSaveError = null;
+        _draftSaveSuccess = null;
+        _draftWebLink = null;
+
+        // also clear send alerts so UI doesn't stack messages
+        _emailSendError = null;
+        _emailSendSuccess = null;
+
+        var to = SplitEmails(_emailTo);
+        var cc = SplitEmails(_emailCc);
+
+        if (to.Length == 0)
+        {
+            _draftSaveError = "Please enter at least one recipient.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_emailSubject))
+        {
+            _draftSaveError = "Please enter a subject.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_emailMarkdown))
+        {
+            _draftSaveError = "Email body is empty.";
+            return;
+        }
+
+        _sendingEmail = true;
+
+        try
+        {
+            // ensure signature is correct right before saving
+            _emailMarkdown = ApplySignature(_emailMarkdown ?? "", _signatureName);
+
+            var html = RenderEmailHtmlForSending(_emailMarkdown ?? "");
+
+            var draft = await EmailService.CreateDraftAsync(
+                to,
+                _emailSubject ?? "",
+                html,
+                cc.Length > 0 ? cc : null,
+                CancellationToken.None);
+
+            _draftSaveSuccess = "Draft saved to Outlook (Drafts).";
+            _draftWebLink = draft?.WebLink;
+        }
+        catch (Exception ex)
+        {
+            _draftSaveError = ex.ToString();
+        }
+        finally
+        {
+            _sendingEmail = false;
+        }
+    }
+
+    // --------- Render helpers (shape-agnostic) ---------
+
+    private string? ResultSummary => _result is null ? null : FirstString(_result,
+        "Summary", "ConversationSummary", "Overview", "Synopsis", "SummaryText");
+
+    private string? ResultSpec => _result is null ? null : FirstString(_result,
+        "Spec", "ShortSpec", "Specification", "TechnicalSpec", "Requirements");
+
+    private List<string> DecisionItems => ExtractStringList(_result,
+        listPropCandidates: new[] { "Decisions", "KeyDecisions", "DecisionItems" },
+        itemTextCandidates: new[] { "Text", "Title", "Decision", "Description", "Value", "Name" });
+
+    private List<string> ActionItems => ExtractStringList(_result,
+        listPropCandidates: new[] { "ActionItems", "Actions", "Tasks", "NextSteps" },
+        itemTextCandidates: new[] { "Text", "Title", "Action", "Description", "Value", "Name" });
+
+    private List<string> OpenQuestions => ExtractStringList(_result,
+        listPropCandidates: new[] { "OpenQuestions", "Questions", "OpenItems" },
+        itemTextCandidates: new[] { "Text", "Question", "Title", "Description", "Value", "Name" });
+
+    private static string? FirstString(object obj, params string[] candidates)
+    {
+        foreach (var name in candidates)
+        {
+            var p = obj.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            if (p is null) continue;
+            var v = p.GetValue(obj);
+            if (v is string s && !string.IsNullOrWhiteSpace(s))
+                return s;
+        }
+        return null;
+    }
+
+    private static List<string> ExtractStringList(object? root, string[] listPropCandidates, string[] itemTextCandidates)
+    {
+        var result = new List<string>();
+        if (root is null) return result;
+
+        object? listObj = null;
+
+        foreach (var propName in listPropCandidates)
+        {
+            var p = root.GetType().GetProperty(propName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            if (p is null) continue;
+
+            var v = p.GetValue(root);
+            if (v is System.Collections.IEnumerable e && v is not string)
+            {
+                listObj = e;
+                break;
+            }
+        }
+
+        if (listObj is null) return result;
+
+        foreach (var item in (System.Collections.IEnumerable)listObj)
+        {
+            if (item is null) continue;
+
+            if (item is string s)
+            {
+                if (!string.IsNullOrWhiteSpace(s)) result.Add(s);
+                continue;
+            }
+
+            var text =
+                FirstString(item, itemTextCandidates)
+                ?? FormatKnownDtoItem(item)
+                ?? item.ToString();
+
+            if (!string.IsNullOrWhiteSpace(text))
+                result.Add(text!);
+        }
+
+        return result;
+    }
+
+    private static string? FormatKnownDtoItem(object item)
+    {
+        var task = FirstString(item, "Task", "Action", "Title", "Text", "Description");
+        var owner = FirstString(item, "Owner", "Assignee", "AssignedTo", "Responsible");
+        var due = FirstString(item, "DueDate", "Due", "Deadline");
+        var priority = FirstString(item, "Priority");
+        var status = FirstString(item, "Status", "State");
+
+        if (!string.IsNullOrWhiteSpace(task) &&
+            (owner is not null || due is not null || priority is not null || status is not null))
+        {
+            var bits = new List<string>();
+            if (!string.IsNullOrWhiteSpace(owner)) bits.Add($"Owner: {owner}");
+            if (!string.IsNullOrWhiteSpace(due)) bits.Add($"Due: {due}");
+            if (!string.IsNullOrWhiteSpace(priority)) bits.Add($"Priority: {priority}");
+            if (!string.IsNullOrWhiteSpace(status)) bits.Add($"Status: {status}");
+
+            return bits.Count > 0 ? $"{task} ({string.Join(", ", bits)})" : task;
+        }
+
+        var question = FirstString(item, "Question", "Text", "Title", "Description");
+        if (!string.IsNullOrWhiteSpace(question))
+            return question;
+
+        return null;
+    }
+
+    private async Task SendEmailAsync()
+    {
+        _emailSendError = null;
+        _emailSendSuccess = null;
+
+        // clear draft alerts so UI doesn't stack messages
+        _draftSaveError = null;
+        _draftSaveSuccess = null;
+        _draftWebLink = null;
+
+        var to = SplitEmails(_emailTo);
+        var cc = SplitEmails(_emailCc);
+
+        if (to.Length == 0)
+        {
+            _emailSendError = "Please enter at least one recipient.";
+            return;
+        }
+
+        _sendingEmail = true;
+
+        try
+        {
+            // ✅ ensure signature is correct right before sending
+            _emailMarkdown = ApplySignature(_emailMarkdown ?? "", _signatureName);
+
+            // ✅ send exactly what preview is based on (same renderer)
+            var htmlToSend = RenderEmailHtmlForSending(_emailMarkdown ?? "");
+
+            await EmailService.SendAsync(
+                to,
+                _emailSubject ?? "",
+                htmlToSend,
+                cc.Length > 0 ? cc : null,
+                true,
+                CancellationToken.None);
+
+            _emailSendSuccess = "Email sent successfully.";
+        }
+        catch (Exception ex)
+        {
+            _emailSendError = ex.ToString();
+        }
+        finally
+        {
+            _sendingEmail = false;
+        }
+    }
+
+    private static string[] SplitEmails(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return Array.Empty<string>();
+
+        return input
+            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => x.Trim())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static string BuildFallbackEmailMarkdown(object r, string? signatureName)
+    {
+        var summary = FirstString(r, "Summary", "ConversationSummary", "Overview", "Synopsis", "SummaryText") ?? "";
+
+        var decisions = ExtractStringList(r,
+            new[] { "Decisions", "KeyDecisions", "DecisionItems" },
+            new[] { "Text", "Title", "Decision", "Description", "Value", "Name" });
+
+        var actions = ExtractStringList(r,
+            new[] { "ActionItems", "Actions", "Tasks", "NextSteps" },
+            new[] { "Text", "Title", "Action", "Description", "Value", "Name" });
+
+        var questions = ExtractStringList(r,
+            new[] { "OpenQuestions", "Questions", "OpenItems" },
+            new[] { "Text", "Question", "Title", "Description", "Value", "Name" });
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("Hi team,");
+        sb.AppendLine();
+        sb.AppendLine("Here is a summary of our conversation:");
+        sb.AppendLine();
+
+        if (!string.IsNullOrWhiteSpace(summary))
+        {
+            sb.AppendLine("## Summary");
+            sb.AppendLine(summary.Trim());
+            sb.AppendLine();
+        }
+
+        if (decisions.Count > 0)
+        {
+            sb.AppendLine("## Key decisions");
+            foreach (var d in decisions) sb.AppendLine($"- {d}");
+            sb.AppendLine();
+        }
+
+        if (actions.Count > 0)
+        {
+            sb.AppendLine("## Action items");
+            foreach (var a in actions) sb.AppendLine($"- {a}");
+            sb.AppendLine();
+        }
+
+        if (questions.Count > 0)
+        {
+            sb.AppendLine("## Open questions");
+            foreach (var q in questions) sb.AppendLine($"- {q}");
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("Best,");
+        sb.AppendLine(signatureName ?? "[Your Name]");
+        return sb.ToString();
+    }
+
+    private static string ApplySignature(string markdown, string? signatureName)
+    {
+        var name = string.IsNullOrWhiteSpace(signatureName) ? null : signatureName.Trim();
+        if (string.IsNullOrWhiteSpace(markdown))
+            return markdown;
+
+        var m = markdown;
+
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            m = m.Replace("[Your Name]", name, StringComparison.OrdinalIgnoreCase);
+            m = m.Replace("{Your Name}", name, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            var trimmed = m.TrimEnd();
+
+            if (trimmed.EndsWith("Best,", StringComparison.OrdinalIgnoreCase))
+            {
+                m = trimmed + "\n" + name + "\n";
+                return m;
+            }
+
+            if (!trimmed.Contains("\nBest,", StringComparison.OrdinalIgnoreCase) &&
+                !trimmed.EndsWith("Best,", StringComparison.OrdinalIgnoreCase) &&
+                !trimmed.Contains("\nRegards,", StringComparison.OrdinalIgnoreCase))
+            {
+                m = trimmed + "\n\nBest,\n" + name + "\n";
+                return m;
+            }
+        }
+
+        return m;
+    }
+
+    // ✅ Used for the in-app preview (CSS handles spacing; we keep HTML clean)
+    private static string RenderEmailBodyHtml(string markdown)
+        => global::Markdig.Markdown.ToHtml(markdown ?? "");
+
+    // ✅ Used for sending/draft (inline styles so email clients render consistently)
+    private static string RenderEmailHtmlForSending(string markdown)
+    {
+        var bodyHtml = RenderEmailBodyHtml(markdown ?? "");
+
+        return $@"
+<div style=""font-family: Arial, sans-serif; font-size: 14px; line-height: 1.45; color:#111;"">
+  {bodyHtml}
+</div>";
+    }
+
+    private async Task<string?> GetUserDisplayNameAsync(string userId)
+    {
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+
+            var row = await db.AppUsers
+                .AsNoTracking()
+                .Where(u => u.UserId == userId)
+                .Select(u => new
+                {
+                    First = EF.Property<string?>(u, "FirstName"),
+                    Last = EF.Property<string?>(u, "LastName"),
+                    UserName = u.UserName,
+                    Email = u.Email
+                })
+                .FirstOrDefaultAsync();
+
+            if (row is null) return null;
+
+            var full = $"{row.First} {row.Last}".Trim();
+            if (!string.IsNullOrWhiteSpace(full)) return full;
+
+            if (!string.IsNullOrWhiteSpace(row.UserName)) return row.UserName;
+            if (!string.IsNullOrWhiteSpace(row.Email)) return row.Email;
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void Close() => MudDialog.Close(DialogResult.Ok(true));
+}

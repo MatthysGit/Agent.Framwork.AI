@@ -1,23 +1,51 @@
+@using MudBlazor
+@inject Ai.AgentFramwork.Massar.Web.Services.Chat.ChatService ChatService
+@inject IDialogService DialogService
+@implements IDisposable
+
 <div class="chat-header-container main-background-gradient">
     <div class="chat-header-controls page-width">
         <button class="btn-default new-chat-text" @onclick="@OnNewChat">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="new-chat-icon new-chat-text">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
             </svg>
             New chat
         </button>
-    </div>
+        
+        @* <span style="font-size:12px;opacity:.6">
+            convo=@(ChatService.ActiveConversationId?.ToString() ?? "null")
+            msgs=@ChatService.Messages.Count
+        </span> *@
 
-    @* <h1 class="page-width">Ai.Massar</h1> *@
+@* 
+        @if (CanImprove)
+        {
+            <button class="btn-default new-chat-text2" @onclick="OpenImproveDialog">
+                ✨ Improve this conversation and send email
+            </button>
+        } *@
+    </div>
 </div>
 
 <style>
+    .chat-header-controls {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
 
     .new-chat-text {
         font-weight: 300;
         color: rgba(0, 0, 0, 0.70);
         letter-spacing: 0.1px;
-        
+      
+    }
+
+    .new-chat-text2 {
+        font-weight: 400;
+        color: rgba(0, 0, 0, 0.70);
+        letter-spacing: 0.1px;
+        margin-left:7rem;
     }
 
     .new-chat-icon {
@@ -25,9 +53,92 @@
         height: 1.25rem;
         color: rgba(0, 0, 0, 0.70);
     }
-</style>
 
+      /* Keep preview looking like an email client (override app/global styles) */
+    .email-preview {
+        font-family: Arial, sans-serif;
+        font-size: 14px;
+        line-height: 1.45;
+        color: #111;
+    }
+
+    .email-preview p {
+        margin: 0 0 12px 0;
+    }
+
+    .email-preview h1,
+    .email-preview h2,
+    .email-preview h3,
+    .email-preview h4 {
+        margin: 16px 0 8px 0;
+        font-weight: 700;
+        line-height: 1.25;
+    }
+
+    /* bullets missing? global CSS often sets ul { list-style: none } */
+    .email-preview ul,
+    .email-preview ol {
+        margin: 0 0 12px 24px;
+        padding: 0;
+        list-style-position: outside;
+    }
+
+    .email-preview ul { list-style-type: disc; }
+    .email-preview ol { list-style-type: decimal; }
+
+    .email-preview li {
+        margin: 4px 0;
+    }
+
+    .email-preview hr {
+        border: 0;
+        border-top: 1px solid #ddd;
+        margin: 16px 0;
+    }
+
+</style>
 
 @code {
     [Parameter] public EventCallback OnNewChat { get; set; }
+
+    // show only when convo exists and has at least user+assistant
+    // private bool CanImprove =>
+    //     ChatService.ActiveConversationId.HasValue &&
+    //     ChatService.Messages.Count >= 2;
+
+    protected override void OnInitialized()
+    {
+        ChatService.OnMessagesUpdated += HandleChatUpdated;
+    }
+
+    private void HandleChatUpdated()
+        => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+        => ChatService.OnMessagesUpdated -= HandleChatUpdated;
+
+    // private void OpenImproveDialog()
+    // {
+    //     var convoId = ChatService.ActiveConversationId;
+    //     if (!convoId.HasValue)
+    //         return;
+
+    //     // ✅ typed parameters (MudBlazor v9 friendly)
+    //     var parameters = new DialogParameters<Ai.AgentFramwork.Massar.Web.Components.Pages.Chat.ImproveConversationDialog>
+    //     {
+    //         { x => x.ConversationId, convoId.Value }
+    //     };
+
+    //     var options = new DialogOptions
+    //     {
+    //         CloseButton = true,
+    //         FullWidth = true,
+    //         MaxWidth = MaxWidth.ExtraLarge
+    //     };
+
+    //     _ = DialogService.ShowAsync<Ai.AgentFramwork.Massar.Web.Components.Pages.Chat.ImproveConversationDialog>(
+    //         "Improve this conversation",
+    //         parameters,
+    //         options);
+    //}
 }

@@ -31,10 +31,11 @@ using OpenAI;
 using OpenAI.Chat;
 using System.Security.Claims;
 using System.Security.Principal;
+using Ai.AgentFramwork.Massar.Web.Services.Email;
+using Ai.AgentFramwork.Massar.Web.DTO; // ✅ SendEmailRequest DTO lives here now
 using static Ai.AgentFramwork.Massar.Web.DTO.LoginRequestDTO;
- 
-
-
+using Ai.AgentFramwork.Massar.Web.DTO;
+    
 var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
@@ -48,7 +49,6 @@ openai.AddEmbeddingGenerator("text-embedding-3-small");
 
 System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
 
-
 builder.Services.AddMudServices();
 builder.Services.AddScoped<IPasswordService, PasswordService>();
 builder.Services.AddScoped<PermissionsState>();
@@ -60,7 +60,6 @@ builder.Services.AddScoped<IEmbeddingService, OpenAiEmbeddingService>();
 builder.Services.AddScoped<IDocumentIngestService, DocumentIngestService>();
 builder.Services.AddScoped<IDocumentSearchService, DocumentSearchService>();
 builder.Services.AddScoped<IChunkReindexService, ChunkReindexService>();
-
 
 builder.Services.AddScoped<ChatAttachmentReaderTool>();
 
@@ -74,7 +73,6 @@ builder.Services.AddScoped<IPdfOcrService>(sp =>
 });
 
 //builder.Services.AddScoped<IPdfOcrService, LocalPdfOcrService>();
-
 
 builder.Services.AddDataProtection()
     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(builder.Environment.ContentRootPath, "dp_keys")))
@@ -172,6 +170,11 @@ builder.Services.AddScoped<IEmbeddingProvider, OpenAiEmbeddingProvider>();
 builder.Services.AddScoped<IUnifiedDocumentSearchService, UnifiedDocumentSearchService>();
 builder.Services.AddScoped<DocumentSearchTool>();
 builder.Services.AddScoped<DocumentEditTool>();
+
+builder.Services.AddScoped<IImproveConversationService, ImproveConversationService>();
+
+builder.Services.AddSingleton<IGraphOptionsProvider, DbGraphOptionsProvider>();
+builder.Services.AddHttpClient<IOffice365EmailService, Office365EmailService>();
 
 builder.Services.AddKeyedSingleton("ingestion_directory",
     new DirectoryInfo(Path.Combine(builder.Environment.WebRootPath, "Data")));
@@ -307,7 +310,6 @@ app.MapGet("/api/chat/attachments/{id:guid}", async (
     return Results.File(blob.FileContent, blob.ContentType ?? "application/octet-stream");
 });
 
-
 app.MapGet("/documents/files/download/{documentFileId:guid}", async (
     Guid documentFileId,
     AppDbContext db) =>
@@ -323,20 +325,38 @@ app.MapGet("/documents/files/download/{documentFileId:guid}", async (
     var downloadName = string.IsNullOrWhiteSpace(file.FileName) ? "document" : file.FileName;
     var contentType = string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType;
 
-    // -------------------------------------------------------
-    // IMPORTANT: Plug in how you store the file content:
-    //
-    // Option A (DB varbinary): byte[] bytes = file.FileBytes;
-    // Option B (path on disk): return Results.File(filePath, contentType, downloadName);
-    // Option C (stream): return Results.File(stream, contentType, downloadName);
-    // -------------------------------------------------------
-
     // ✅ OPTION A: file bytes are stored on the row (rename FileBytes to your real property)
     byte[] bytes = file.FileContent; // <-- CHANGE THIS PROPERTY NAME TO MATCH YOUR MODEL
 
     return Results.File(bytes, contentType, downloadName);
 });
 
+app.MapPost("/api/chat/conversations/{conversationId:guid}/improve", async (
+        Guid conversationId,
+        HttpContext ctx,
+        IImproveConversationService improve,
+        CancellationToken ct) =>
+{
+    var userId = ctx.User.FindFirstValue(AppClaimTypes.UserId);
+    if (string.IsNullOrWhiteSpace(userId))
+        return Results.Unauthorized();
+
+    var result = await improve.ImproveAsync(userId, conversationId, options: null, ct);
+    return Results.Ok(result);
+})
+    .RequireAuthorization();
+
+app.MapPost("/api/email/send", async (
+        SendEmailRequest req,
+        IOffice365EmailService mailer,
+        CancellationToken ct) =>
+{
+    // ✅ You removed Markdig package; use the signed one brought by Microsoft.Extensions.DataIngestion.Markdig
+    var html = global::Markdig.Markdown.ToHtml(req.BodyMarkdown ?? "");
+    await mailer.SendAsync(req.To, req.Subject, html, req.Cc, req.SaveToSentItems, ct);
+    return Results.Ok(new { sent = true });
+})
+    .RequireAuthorization();
 
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();

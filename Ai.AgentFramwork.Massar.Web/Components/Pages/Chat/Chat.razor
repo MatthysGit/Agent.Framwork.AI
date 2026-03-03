@@ -4,7 +4,6 @@
 @inject ChatService ChatService
 @inject IChatContext ChatContext
 @inject MudBlazor.IDialogService DialogService
-
 @using Ai.AgentFramwork.Massar.Web.DBModels
 @using Ai.AgentFramwork.Massar.Web.DTO
 @using Ai.AgentFramwork.Massar.Web.Services.Chat
@@ -112,8 +111,11 @@
                 </div>
             }
 
-            <!-- Scroll area -->
-            <MudText>@selectedConversationId</MudText>
+            <!-- Scroll area --ms>
+            @* <MudText>@selectedConversationId</MudText> *@
+            
+
+
             <div class="chat-messages-wrapper @( _busy ? "busy-dim" : "" )">
                 <ChatMessageList Messages="@messages"
                                  InProgressMessage="@currentResponseMessage"
@@ -154,6 +156,16 @@
                     }
                 </MudPaper>
             }
+            
+            
+            @if (CanImprove)
+            {
+                <button class="btn-default new-chat-text-chat" @onclick="OpenImproveDialog">
+                    <span class="no-underline">✨</span>
+                    <span class="underline-text">Improve this conversation and send email</span>
+                </button>
+            }
+
 
             <!-- Input area (pinned) -->
             <div class="chat-input-wrapper">
@@ -425,6 +437,37 @@
     private Guid? selectedConversationId;
     private bool includeArchived;
     private bool conversationsLoading;
+
+
+    private bool CanImprove =>
+        ChatService.ActiveConversationId.HasValue &&
+        ChatService.Messages.Count >= 2;
+    
+    
+    private void OpenImproveDialog()
+    {
+        var convoId = ChatService.ActiveConversationId;
+        if (!convoId.HasValue)
+            return;
+
+        // ✅ typed parameters (MudBlazor v9 friendly)
+        var parameters = new DialogParameters<Ai.AgentFramwork.Massar.Web.Components.Pages.Chat.ImproveConversationDialog>
+        {
+            { x => x.ConversationId, convoId.Value }
+        };
+
+        var options = new DialogOptions
+        {
+            CloseButton = true,
+            FullWidth = true,
+            MaxWidth = MaxWidth.ExtraLarge
+        };
+
+        _ = DialogService.ShowAsync<Ai.AgentFramwork.Massar.Web.Components.Pages.Chat.ImproveConversationDialog>(
+            "Improve this conversation",
+            parameters,
+            options);
+    }
 
     private void ToggleHistory()
     {
