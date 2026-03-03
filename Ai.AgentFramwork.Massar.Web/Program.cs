@@ -173,7 +173,7 @@ builder.Services.AddScoped<DocumentEditTool>();
 
 builder.Services.AddScoped<IImproveConversationService, ImproveConversationService>();
 
-builder.Services.Configure<GraphOptions>(builder.Configuration.GetSection("Graph"));
+builder.Services.AddSingleton<IGraphOptionsProvider, DbGraphOptionsProvider>();
 builder.Services.AddHttpClient<IOffice365EmailService, Office365EmailService>();
 
 builder.Services.AddKeyedSingleton("ingestion_directory",

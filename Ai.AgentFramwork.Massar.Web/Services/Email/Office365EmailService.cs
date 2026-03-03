@@ -5,7 +5,6 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Azure.Core;
 using Azure.Identity;
-using Microsoft.Extensions.Options;
 using System.Linq;
 
 namespace Ai.AgentFramwork.Massar.Web.Services.Email;
@@ -33,15 +32,40 @@ public interface IOffice365EmailService
 public sealed class Office365EmailService : IOffice365EmailService
 {
     private readonly HttpClient _http;
-    private readonly GraphOptions _opt;
-    private readonly TokenCredential _cred;
+    private readonly IGraphOptionsProvider _graphOpts;
 
-    public Office365EmailService(HttpClient http, IOptions<GraphOptions> opt)
+    public Office365EmailService(HttpClient http, IGraphOptionsProvider graphOpts)
     {
         _http = http;
-        _opt = opt.Value;
+        _graphOpts = graphOpts;
+    }
 
-        _cred = new ClientSecretCredential(_opt.TenantId, _opt.ClientId, _opt.ClientSecret);
+    private static TokenCredential CreateCredential(GraphOptions opt)
+        => new ClientSecretCredential(opt.TenantId, opt.ClientId, opt.ClientSecret);
+
+    private async Task<(GraphOptions Opt, AccessToken Token)> GetTokenAsync(CancellationToken ct)
+    {
+        var opt = await _graphOpts.GetAsync(ct);
+
+        if (string.IsNullOrWhiteSpace(opt.TenantId))
+            throw new InvalidOperationException("Graph TenantId is not configured in the database.");
+
+        if (string.IsNullOrWhiteSpace(opt.ClientId))
+            throw new InvalidOperationException("Graph ClientId is not configured in the database.");
+
+        if (string.IsNullOrWhiteSpace(opt.ClientSecret))
+            throw new InvalidOperationException("Graph ClientSecret is not configured in the database.");
+
+        if (string.IsNullOrWhiteSpace(opt.FromUser))
+            throw new InvalidOperationException("Graph FromUser is not configured in the database.");
+
+        var cred = CreateCredential(opt);
+
+        var token = await cred.GetTokenAsync(
+            new TokenRequestContext(new[] { "https://graph.microsoft.com/.default" }),
+            ct);
+
+        return (opt, token);
     }
 
     public async Task SendAsync(
@@ -55,16 +79,11 @@ public sealed class Office365EmailService : IOffice365EmailService
         if (to is null || to.Length == 0)
             throw new ArgumentException("At least one recipient is required.", nameof(to));
 
-        if (string.IsNullOrWhiteSpace(_opt.FromUser))
-            throw new InvalidOperationException("Graph:FromUser is not configured.");
-
-        var token = await _cred.GetTokenAsync(
-            new TokenRequestContext(new[] { "https://graph.microsoft.com/.default" }),
-            ct);
+        var (opt, token) = await GetTokenAsync(ct);
 
         using var req = new HttpRequestMessage(
             HttpMethod.Post,
-            $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(_opt.FromUser)}/sendMail");
+            $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(opt.FromUser)}/sendMail");
 
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
 
@@ -107,17 +126,12 @@ public sealed class Office365EmailService : IOffice365EmailService
         if (to is null || to.Length == 0)
             throw new ArgumentException("At least one recipient is required.", nameof(to));
 
-        if (string.IsNullOrWhiteSpace(_opt.FromUser))
-            throw new InvalidOperationException("Graph:FromUser is not configured.");
-
-        var token = await _cred.GetTokenAsync(
-            new TokenRequestContext(new[] { "https://graph.microsoft.com/.default" }),
-            ct);
+        var (opt, token) = await GetTokenAsync(ct);
 
         // Create a draft message in FromUser mailbox (Drafts folder)
         using var req = new HttpRequestMessage(
             HttpMethod.Post,
-            $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(_opt.FromUser)}/messages");
+            $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(opt.FromUser)}/messages");
 
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
 

@@ -51,6 +51,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<DocumentRoleAccess> DocumentRoleAccesses { get; set; }
 
+    public virtual DbSet<Office365GraphConfig> Office365GraphConfigs { get; set; }
+
     public virtual DbSet<Role> Roles { get; set; }
 
     public virtual DbSet<SecurityGroup> SecurityGroups { get; set; }
@@ -452,6 +454,20 @@ public partial class AppDbContext : DbContext
                 .HasForeignKey(d => d.RoleId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("FK_DocumentRoleAccess_Role");
+        });
+
+        modelBuilder.Entity<Office365GraphConfig>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("PK__Office36__3214EC075A731122");
+
+            entity.ToTable("Office365GraphConfig");
+
+            entity.Property(e => e.ClientId).HasMaxLength(100);
+            entity.Property(e => e.ClientSecret).HasMaxLength(4000);
+            entity.Property(e => e.FromUser).HasMaxLength(256);
+            entity.Property(e => e.IsActive).HasDefaultValue(true);
+            entity.Property(e => e.TenantId).HasMaxLength(100);
+            entity.Property(e => e.UpdatedUtc).HasDefaultValueSql("(sysutcdatetime())");
         });
 
         modelBuilder.Entity<Role>(entity =>
