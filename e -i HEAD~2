@@ -1,0 +1,26 @@
+[33m103811f[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32memail[m[33m)[m db
+[33m3dbe8d8[m eamil
+[33m20aa543[m[33m ([m[1;31morigin/masterx[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmasterx[m[33m)[m Merge pull request #7 from MatthysGit/DecisionTracker
+[33ma5e3c5e[m[33m ([m[1;31morigin/DecisionTracker[m[33m, [m[1;32mDecisionTracker[m[33m)[m decision added
+[33m26d83e1[m Merge pull request #6 from MatthysGit/ChatModelToDB
+[33mc0bd52a[m[33m ([m[1;31morigin/ChatModelToDB[m[33m, [m[1;32mChatModelToDB[m[33m)[m chat moels moved to db
+[33m2fa2f91[m Merge pull request #5 from MatthysGit/commenst
+[33m90cb63f[m[33m ([m[1;31morigin/commenst[m[33m, [m[1;32mcommenst[m[33m)[m added cpmments
+[33mb941106[m Merge pull request #4 from MatthysGit/PrivilegedPPIRoles
+[33m70e02dd[m[33m ([m[1;31morigin/PrivilegedPPIRoles[m[33m, [m[1;32mPrivilegedPPIRoles[m[33m)[m PPI
+[33m179be52[m Merge pull request #3 from MatthysGit/enterprise-level
+[33mf61157f[m[33m ([m[1;31morigin/enterprise-level[m[33m, [m[1;32menterprise-level[m[33m)[m pipline-done
+[33m2e3577d[m v2
+[33m7a4a770[m v1
+[33m44a2a1e[m Merge pull request #2 from MatthysGit/Pipline
+[33m491ddab[m[33m ([m[1;31morigin/Pipline[m[33m, [m[1;32mPipline[m[33m)[m pipeline working
+[33m21ef553[m pipe
+[33ma6c6627[m Merge pull request #1 from MatthysGit/calsses
+[33m4e894f9[m[33m ([m[1;31morigin/calsses[m[33m, [m[1;32mcalsses[m[33m)[m Moved Agents into classes
+[33m2f36f42[m Roll back
+[33m6a3f14c[m Merge pull request #2 from MatthysGit/ExcelSupport
+[33med2e0ac[m UI
+[33m9c9d036[m Merge pull request #1 from MatthysGit/Documents
+[33m1d3aec0[m Documents
+[33mbda8f37[m Add project files.
+[33mc251ef8[m Add .gitattributes and .gitignore.
