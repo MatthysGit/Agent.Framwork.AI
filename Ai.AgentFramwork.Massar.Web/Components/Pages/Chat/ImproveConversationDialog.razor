@@ -139,41 +139,48 @@
                         <MudAlert Severity="Severity.Success" Dense="true">@_emailSendSuccess</MudAlert>
                     }
 
-                    <MudStack Direction="Row" Spacing="1" AlignItems="AlignItems.Center" Class="mail-actions">
-                        <MudButton Color="Color.Primary"
-                                   Variant="Variant.Filled"
-                                   Disabled="@(!_canSendEmail || _sendingEmail)"
-                                   OnClick="SendEmailAsync">
-                            @if (_sendingEmail)
-                            {
-                                <MudProgressCircular Indeterminate="true" Size="Size.Small" Class="mr-2" />
-                                <span>Sending</span>
-                            }
-                            else
-                            {
-                                <span>Send Email</span>
-                            }
-                        </MudButton>
 
-                        <MudButton Variant="Variant.Outlined"
-                                   Size="Size.Small"
-                                   Disabled="@(!_canSendEmail || _sendingEmail)"
-                                   OnClick="SaveDraftAsync">
-                            Save as draft mail
-                        </MudButton>
-
-                        <MudSpacer />
-                    </MudStack>
                 </MudStack>
             }
         </MudStack>
     </DialogContent>
 
     <DialogActions>
+        <MudStack Direction="Row" Spacing="1" AlignItems="AlignItems.Center" Class="mail-actions">
+
+
+
+            <MudSpacer />
+        </MudStack>
+
         <MudButton Variant="Variant.Text" OnClick="Close" Disabled="@(_busy || _sendingEmail)">Close</MudButton>
-        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ReloadAsync" Disabled="@(_busy || _sendingEmail)">
-            Refresh
+        
+
+        <MudButton Variant="Variant.Outlined"
+                   Size="Size.Small"
+                   Disabled="@(!_canSendEmail || _sendingEmail)"
+                   OnClick="SaveDraftAsync">
+            Save as draft mail
         </MudButton>
+        
+        <MudButton Color="Color.Primary"
+                   Variant="Variant.Filled"
+                   Disabled="@(!_canSendEmail || _sendingEmail)"
+                   OnClick="SendEmailAsync">
+            @if (_sendingEmail)
+            {
+                <MudProgressCircular Indeterminate="true" Size="Size.Small" Class="mr-2" />
+                <span>Sending</span>
+            }
+            else
+            {
+                <span>Send Email</span>
+            }
+        </MudButton>
+
+        @*       <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ReloadAsync" Disabled="@(_busy || _sendingEmail)">
+            Refresh
+        </MudButton> *@
     </DialogActions>
 </MudDialog>
 
