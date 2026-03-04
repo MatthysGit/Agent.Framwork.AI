@@ -1,6 +1,7 @@
 ﻿using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Linq;
 using Ai.AgentFramwork.Massar.Web.Agents;
 using Ai.AgentFramwork.Massar.Web.Services.Chat;
 using Ai.AgentFramwork.Massar.Web.Services.Chat.DecisionTracking;
@@ -276,12 +277,40 @@ User request:
         }
 
         // ----------------------------
-        // SQL enforcement path (plain text -> render as 1-col table; attach hidden payload for email)
+        // SQL enforcement path (plain text -> render as table; attach hidden payload for email)
         // ----------------------------
         if (r.Agent.Equals(ChatAgentFactory.SqlAgentName, StringComparison.OrdinalIgnoreCase) &&
             !r.Mode.Equals("chart", StringComparison.OrdinalIgnoreCase))
         {
-            var enforcedSqlPrompt = string.Format(@"
+
+            var wantsTable = LooksTabularUserRequest(userText);
+
+            // If the user asked for a breakdown/list (multi-row), force the SQL agent to return the SELECT tool JSON
+            // so we can render a proper table in the chat.
+            var enforcedSqlPrompt = wantsTable
+                ? string.Format(@"
+You are the SQL agent for THIS application's database.
+
+NON-NEGOTIABLE RULES:
+- You MUST NOT ask the user any questions.
+- You MUST produce the best possible answer by using database tools.
+- If the request is underspecified, choose the most reasonable interpretation and proceed.
+- NEVER respond with: 'Could you clarify...' / 'Please provide more context...' / any question.
+
+CRITICAL TOOL ORDER RULE (MUST FOLLOW):
+- At the START of EVERY user request, you MUST call TableAndViewsInDatabse first.
+- You MUST NOT call ExecuteSelectAsync until AFTER you have called TableAndViewsInDatabse for this request.
+- If you need any table/column info, call TableColumsByTable / TableRelationships ONLY AFTER TableAndViewsInDatabse.
+- If TableAndViewsInDatabse fails or returns empty, reply exactly: unauthorized access.
+
+OUTPUT RULE:
+- You MUST return ONLY the JSON returned by the database SELECT tool (ExecuteSelectAsync / SqlServerSelectTool).
+- No markdown, no prose, no extra keys, no wrapping.
+
+USER REQUEST:
+{0}
+", userText)
+                : string.Format(@"
 You are the SQL agent for THIS application's database.
 
 NON-NEGOTIABLE RULES:
@@ -303,7 +332,6 @@ OUTPUT RULE:
 USER REQUEST:
 {0}
 ", userText);
-
             var sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, enforcedSqlPrompt, cancellationToken: ct);
 
             if (LooksLikeClarifyingQuestion(sql.Text))
@@ -333,7 +361,22 @@ USER REQUEST:
                 sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, retryPrompt, cancellationToken: ct);
             }
 
-            var tableMdSimple = FormatSqlAnswerAsSingleColumnTable(userText, sql.Text);
+            // ✅ FIX: If tool returned a "rows" JSON payload, render it as a proper table (NOT a 1-col "first number" table)
+            var raw = (sql.Text ?? "").Trim();
+            string tableMdSimple;
+
+            // Many agents wrap JSON in prose or code fences; extract the first JSON object if present.
+            var jsonCandidate = ExtractFirstJsonObject(raw) ?? (LooksLikeJson(raw) ? raw : null);
+
+            if (!string.IsNullOrWhiteSpace(jsonCandidate) &&
+                TryRenderRowsObjectTableMarkdown(jsonCandidate, out var mdFromRows))
+            {
+                tableMdSimple = mdFromRows;
+            }
+            else
+            {
+                tableMdSimple = FormatSqlAnswerAsSingleColumnTable(userText, raw);
+            }
 
             // ✅ attach hidden payload so Improve/Email can reliably extract it
             if (TryExtractSqlTablePayloadFromMarkdown(tableMdSimple, out var payloadJson))
@@ -430,6 +473,28 @@ USER REQUEST:
         if (string.IsNullOrWhiteSpace(text)) return false;
         var t = text.TrimStart();
         return t.StartsWith("{") || t.StartsWith("[");
+    }
+
+    // Heuristic: if the user is asking for a breakdown/list/grouped result, we want a table (multi-row),
+    // and we should keep the SQL tool JSON so the UI can render a proper table.
+    private static bool LooksTabularUserRequest(string? userText)
+    {
+        if (string.IsNullOrWhiteSpace(userText)) return false;
+        var t = userText.Trim().ToLowerInvariant();
+
+        // Strong signals for multi-row output
+        if (t.Contains("group by") || t.Contains("breakdown") || t.Contains("by region") || t.Contains("by department") ||
+            t.Contains("by office") || t.Contains("by country") || t.Contains("per ") || t.Contains("top ") ||
+            t.Contains("list ") || t.StartsWith("list") || t.Contains("show ") || t.StartsWith("show") ||
+            t.Contains("each ") || t.Contains("all ") || t.Contains("regions") || t.Contains("departments") ||
+            t.Contains("countries") || t.Contains("offices"))
+            return true;
+
+        // If asking for "count ... by ..." in natural language
+        if (t.Contains("count") && t.Contains(" by "))
+            return true;
+
+        return false;
     }
 
     private static bool IsIndividualCompensationQuestion(string text)
@@ -846,6 +911,68 @@ USER REQUEST:
                     ? row.Concat(Enumerable.Repeat("", cols.Length - row.Length)).ToArray()
                     : row.Take(cols.Length).ToArray();
 
+                sb.AppendLine("| " + string.Join(" | ", cells) + " |");
+            }
+
+            markdown = sb.ToString();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // ✅ NEW: Render a SqlServerSelectTool-style payload:
+    // {"rowCount":10,"truncated":false,"rows":[{"ColA":"x","ColB":1}, ... ]}
+    private static bool TryRenderRowsObjectTableMarkdown(string json, out string markdown)
+    {
+        markdown = "";
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (!TryGetPropIgnoreCase(root, "rows", out var rowsEl) || rowsEl.ValueKind != JsonValueKind.Array)
+                return false;
+
+            var rows = rowsEl.EnumerateArray().ToList();
+            if (rows.Count == 0) return false;
+
+            if (rows.Any(r => r.ValueKind != JsonValueKind.Object))
+                return false;
+
+            var columns = new List<string>();
+            void AddCol(string name)
+            {
+                if (!columns.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    columns.Add(name);
+            }
+
+            foreach (var p in rows[0].EnumerateObject())
+                AddCol(p.Name);
+
+            foreach (var r in rows)
+                foreach (var p in r.EnumerateObject())
+                    AddCol(p.Name);
+
+            if (columns.Count == 0) return false;
+
+            var sb = new StringBuilder();
+            sb.AppendLine("| " + string.Join(" | ", columns.Select(EscapeMd)) + " |");
+            sb.AppendLine("| " + string.Join(" | ", columns.Select(_ => "---")) + " |");
+
+            foreach (var r in rows)
+            {
+                var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var p in r.EnumerateObject())
+                {
+                    map[p.Name] = p.Value.ValueKind == JsonValueKind.String
+                        ? (p.Value.GetString() ?? "")
+                        : p.Value.ToString();
+                }
+
+                var cells = columns.Select(c => EscapeMd(map.TryGetValue(c, out var v) ? v : "")).ToArray();
                 sb.AppendLine("| " + string.Join(" | ", cells) + " |");
             }
 

@@ -110,6 +110,8 @@ public sealed class SqlServerSelectTool
 
             rows.Add(row);
         }
+        
+        var x = JsonSerializer.Serialize(new { rowCount = rows.Count, truncated = totalRead > maxRows, rows });
 
         return JsonSerializer.Serialize(new { rowCount = rows.Count, truncated = totalRead > maxRows, rows });
     }
