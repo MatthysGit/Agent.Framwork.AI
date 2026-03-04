@@ -1,5 +1,4 @@
-﻿// File: Services/Chat/Pipeline/ChatPipeline.cs
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Ai.AgentFramwork.Massar.Web.Agents;
@@ -28,12 +27,6 @@ public sealed class ChatPipeline
 
     // Optional: allow ChatService to pass the current user id (claims subject, etc.)
     private readonly Func<string?>? _getOwnerUserId;
-
-    // Strip both:
-    // <!--TOOL:...-->
-    // <! -TOOL:...->   (broken/mangled comment that showed in the chat)
-    private static readonly Regex HiddenToolRegex =
-        new(@"<\!\-\-TOOL:.*?\-\->|<\!\-TOOL:.*?\-\>", RegexOptions.Compiled | RegexOptions.Singleline);
 
     public ChatPipeline(
         RouterAgent router,
@@ -82,12 +75,6 @@ public sealed class ChatPipeline
         DecisionDetection Detection,
         DecisionDraft? Draft);
 
-    private static string StripHiddenToolArtifacts(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return text;
-        return HiddenToolRegex.Replace(text, "").Trim();
-    }
-
     public async Task<PipelineResult> ExecuteAsync(string userText, CancellationToken ct = default)
     {
         if (IsIndividualCompensationQuestion(userText))
@@ -124,8 +111,7 @@ public sealed class ChatPipeline
             swTotal.Stop();
             Console.WriteLine($"[PIPELINE] done agent={r.Agent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
 
-            // keep JSON unchanged, but strip any hidden artifacts just in case
-            return new PipelineResult(StripHiddenToolArtifacts(json ?? "No relevant information found."), r.Agent, r.Reason);
+            return new PipelineResult(json ?? "No relevant information found.", r.Agent, r.Reason);
         }
 
         if (r.Agent.Equals(ChatAgentFactory.DocumentEditAgentName, StringComparison.OrdinalIgnoreCase))
@@ -138,11 +124,11 @@ public sealed class ChatPipeline
             swTotal.Stop();
             Console.WriteLine($"[PIPELINE] done agent={r.Agent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
 
-            return new PipelineResult(StripHiddenToolArtifacts(json ?? "No edit result returned."), r.Agent, r.Reason);
+            return new PipelineResult(json ?? "No edit result returned.", r.Agent, r.Reason);
         }
 
         // ----------------------------
-        // Chart path (unchanged)
+        // Chart path (SQL -> JSON -> chart tool -> markdown image; attach hidden payload for email)
         // ----------------------------
         if (r.Mode.Equals("chart", StringComparison.OrdinalIgnoreCase))
         {
@@ -223,8 +209,17 @@ User request:
                 swTotal.Stop();
                 Console.WriteLine($"[PIPELINE] done agent={ChatAgentFactory.SqlAgentName} mode=chart totalMs={swTotal.ElapsedMilliseconds}");
 
+                // ✅ show the chart + attach hidden payload so Improve/Email can include it later
                 var text = $"![chart]({url})";
-                return await MaybeAttachDecisionCandidateAsync(userText, StripHiddenToolArtifacts(text), ChatAgentFactory.SqlAgentName, r.Reason, ct);
+
+                var chartPayload = JsonSerializer.Serialize(new
+                {
+                    type = "chart_url",
+                    url
+                });
+                text += WrapHiddenToolPayload("chart_result", chartPayload);
+
+                return await MaybeAttachDecisionCandidateAsync(userText, text, ChatAgentFactory.SqlAgentName, r.Reason, ct);
             }
             catch (Exception ex)
             {
@@ -260,7 +255,13 @@ User request:
                     ? tableMd
                     : $"Chart generation failed and table fallback could not be generated.\n\nError: {ex.Message}";
 
-                var checkedFallback = await RunPpiSafeAsync(userText, StripHiddenToolArtifacts(fallbackMd), ct);
+                // ✅ attach hidden payload for Improve/Email
+                if (TryExtractSqlTablePayloadFromMarkdown(fallbackMd, out var payloadJson))
+                {
+                    fallbackMd += WrapHiddenToolPayload("sql_result", payloadJson);
+                }
+
+                var checkedFallback = await RunPpiSafeAsync(userText, fallbackMd, ct);
 
                 swTotal.Stop();
                 Console.WriteLine($"[PIPELINE] done agent={ChatAgentFactory.SqlAgentName} mode=chart-fallback totalMs={swTotal.ElapsedMilliseconds}");
@@ -275,7 +276,7 @@ User request:
         }
 
         // ----------------------------
-        // SQL enforcement path (unchanged logic, but we add decision hook at end)
+        // SQL enforcement path (plain text -> render as 1-col table; attach hidden payload for email)
         // ----------------------------
         if (r.Agent.Equals(ChatAgentFactory.SqlAgentName, StringComparison.OrdinalIgnoreCase) &&
             !r.Mode.Equals("chart", StringComparison.OrdinalIgnoreCase))
@@ -332,9 +333,15 @@ USER REQUEST:
                 sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, retryPrompt, cancellationToken: ct);
             }
 
-            // Keep the nice 1-col table in chat (Improve dialog extracts tables directly from messages)
             var tableMdSimple = FormatSqlAnswerAsSingleColumnTable(userText, sql.Text);
-            var checkedSql = await RunPpiSafeAsync(userText, StripHiddenToolArtifacts(tableMdSimple), ct);
+
+            // ✅ attach hidden payload so Improve/Email can reliably extract it
+            if (TryExtractSqlTablePayloadFromMarkdown(tableMdSimple, out var payloadJson))
+            {
+                tableMdSimple += WrapHiddenToolPayload("sql_result", payloadJson);
+            }
+
+            var checkedSql = await RunPpiSafeAsync(userText, tableMdSimple, ct);
 
             swTotal.Stop();
             Console.WriteLine($"[PIPELINE] done agent={ChatAgentFactory.SqlAgentName} mode=sql totalMs={swTotal.ElapsedMilliseconds}");
@@ -352,10 +359,10 @@ USER REQUEST:
         {
             swTotal.Stop();
             Console.WriteLine($"[PIPELINE] done agent={call.AgentName} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
-            return new PipelineResult(StripHiddenToolArtifacts(call.Text), call.AgentName, r.Reason);
+            return new PipelineResult(call.Text, call.AgentName, r.Reason);
         }
 
-        var checkedAnswer = await RunPpiSafeAsync(userText, StripHiddenToolArtifacts(call.Text), ct);
+        var checkedAnswer = await RunPpiSafeAsync(userText, call.Text, ct);
 
         swTotal.Stop();
         Console.WriteLine($"[PIPELINE] done agent={call.AgentName} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
@@ -363,7 +370,8 @@ USER REQUEST:
         return await MaybeAttachDecisionCandidateAsync(userText, checkedAnswer, call.AgentName, r.Reason, ct);
     }
 
-    // ✅ Decision hook: attach candidate + add friendly prompt line for UIs that don’t implement the dialog yet
+    // ✅ Decision hook: attach candidate (no text mutation)
+
     private async Task<PipelineResult> MaybeAttachDecisionCandidateAsync(
         string userText,
         string assistantText,
@@ -371,8 +379,6 @@ USER REQUEST:
         string routerReason,
         CancellationToken ct)
     {
-        assistantText = StripHiddenToolArtifacts(assistantText);
-
         // Don’t attempt decision tracking on JSON attachments responses
         if (LooksLikeJson(assistantText))
             return new PipelineResult(assistantText, routedAgent, routerReason);
@@ -456,14 +462,8 @@ USER REQUEST:
 
     private static async Task<string> RunPpiSafeAsync(string userText, string draft, CancellationToken ct)
     {
-        try
-        {
-            return draft;
-        }
-        catch
-        {
-            return draft;
-        }
+        try { return draft; }
+        catch { return draft; }
     }
 
     private static string InferEditInstruction(string userText)
@@ -521,7 +521,7 @@ USER REQUEST:
     // Chart JSON schema support (native schema + SQL-agent schema normalization)
     private static ChartPayload ParseChartJson(string json)
     {
-        // 1) Attempt direct deserialize into ChartPayload (your native payload shape).
+        // 1) Attempt direct deserialize into ChartPayload.
         try
         {
             var direct = JsonSerializer.Deserialize<ChartPayload>(json, new JsonSerializerOptions
@@ -858,12 +858,43 @@ USER REQUEST:
         }
     }
 
+    private static string WrapHiddenToolPayload(string type, string json)
+    {
+        var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json ?? ""));
+        return $"\n\n[//]: # (TOOL:{type}:{b64})\n";
+    }
+
+    private static bool TryExtractSqlTablePayloadFromMarkdown(string markdown, out string payloadJson)
+    {
+        payloadJson = "";
+        if (string.IsNullOrWhiteSpace(markdown)) return false;
+
+        var t = markdown.TrimStart();
+        if (t.StartsWith("{") || t.StartsWith("["))
+        {
+            payloadJson = markdown;
+            return true;
+        }
+
+        payloadJson = JsonSerializer.Serialize(new
+        {
+            type = "markdown_table",
+            markdown = markdown
+        });
+
+        return true;
+    }
+
     private static string Cap(string s)
     {
         if (string.IsNullOrWhiteSpace(s)) return s;
         if (s.Length == 1) return s.ToUpperInvariant();
         return char.ToUpperInvariant(s[0]) + s[1..];
     }
+
+    // =========================
+    // ✅ Simple 1-column table
+    // =========================
 
     private static string FormatSqlAnswerAsSingleColumnTable(string userText, string sqlText)
     {
@@ -924,7 +955,6 @@ USER REQUEST:
     private static string CleanupThing(string thing)
     {
         thing = (thing ?? "").Trim();
-
         thing = thing.TrimEnd('?', '.', '!', ',', ';', ':');
 
         thing = Regex.Replace(
@@ -980,7 +1010,7 @@ USER REQUEST:
         if (string.IsNullOrWhiteSpace(text)) return false;
 
         var cleaned = text.Replace(",", "");
-        var m = System.Text.RegularExpressions.Regex.Match(cleaned, @"(\d+)");
+        var m = Regex.Match(cleaned, @"(\d+)");
         if (!m.Success) return false;
 
         return long.TryParse(m.Groups[1].Value, out value);
@@ -1016,7 +1046,7 @@ USER REQUEST:
     }
 
     // --------------------------------------------------------------------
-    // Policy classification (currently unused by ExecuteAsync in your snippet)
+    // Policy classification (currently unused by ExecuteAsync in this version)
     // --------------------------------------------------------------------
 
     private sealed record PolicyDecision(

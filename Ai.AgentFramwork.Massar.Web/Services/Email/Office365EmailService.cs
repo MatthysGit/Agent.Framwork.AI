@@ -5,11 +5,21 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Azure.Core;
 using Azure.Identity;
-using System.Linq;
 
 namespace Ai.AgentFramwork.Massar.Web.Services.Email;
 
 public sealed record DraftResult(string Id, string? WebLink);
+
+/// <summary>
+/// Attachment DTO used by the email composer to embed charts/images inline (CID) and/or attach files.
+/// For inline images: set IsInline=true and ContentId="somecid@inline", and reference it in HTML as src="cid:somecid@inline".
+/// </summary>
+public sealed record EmailAttachment(
+    string FileName,
+    string ContentType,
+    byte[] ContentBytes,
+    bool IsInline = false,
+    string? ContentId = null);
 
 public interface IOffice365EmailService
 {
@@ -19,6 +29,7 @@ public interface IOffice365EmailService
         string htmlBody,
         string[]? cc = null,
         bool saveToSentItems = true,
+        IEnumerable<EmailAttachment>? attachments = null,
         CancellationToken ct = default);
 
     Task<DraftResult?> CreateDraftAsync(
@@ -26,6 +37,7 @@ public interface IOffice365EmailService
         string subject,
         string htmlBody,
         string[]? cc = null,
+        IEnumerable<EmailAttachment>? attachments = null,
         CancellationToken ct = default);
 }
 
@@ -74,6 +86,7 @@ public sealed class Office365EmailService : IOffice365EmailService
         string htmlBody,
         string[]? cc = null,
         bool saveToSentItems = true,
+        IEnumerable<EmailAttachment>? attachments = null,
         CancellationToken ct = default)
     {
         if (to is null || to.Length == 0)
@@ -90,6 +103,8 @@ public sealed class Office365EmailService : IOffice365EmailService
         static object Recipients(string[] emails) =>
             emails.Select(e => new { emailAddress = new { address = e } });
 
+        var att = BuildGraphAttachments(attachments);
+
         var payload = new
         {
             message = new
@@ -97,7 +112,9 @@ public sealed class Office365EmailService : IOffice365EmailService
                 subject = string.IsNullOrWhiteSpace(subject) ? "(no subject)" : subject,
                 body = new { contentType = "HTML", content = htmlBody },
                 toRecipients = Recipients(to),
-                ccRecipients = (cc is { Length: > 0 }) ? Recipients(cc) : Array.Empty<object>()
+                ccRecipients = (cc is { Length: > 0 }) ? Recipients(cc) : Array.Empty<object>(),
+                // Inline charts/images are supported by setting isInline + contentId
+                attachments = att
             },
             saveToSentItems
         };
@@ -121,6 +138,7 @@ public sealed class Office365EmailService : IOffice365EmailService
         string subject,
         string htmlBody,
         string[]? cc = null,
+        IEnumerable<EmailAttachment>? attachments = null,
         CancellationToken ct = default)
     {
         if (to is null || to.Length == 0)
@@ -138,12 +156,15 @@ public sealed class Office365EmailService : IOffice365EmailService
         static object Recipients(string[] emails) =>
             emails.Select(e => new { emailAddress = new { address = e } });
 
+        var att = BuildGraphAttachments(attachments);
+
         var payload = new
         {
             subject = string.IsNullOrWhiteSpace(subject) ? "(no subject)" : subject,
             body = new { contentType = "HTML", content = htmlBody },
             toRecipients = Recipients(to),
-            ccRecipients = (cc is { Length: > 0 }) ? Recipients(cc) : Array.Empty<object>()
+            ccRecipients = (cc is { Length: > 0 }) ? Recipients(cc) : Array.Empty<object>(),
+            attachments = att
         };
 
         req.Content = new StringContent(
@@ -178,6 +199,60 @@ public sealed class Office365EmailService : IOffice365EmailService
             // Draft created successfully, but parsing failed — still return "saved" with no link
             return new DraftResult(Id: "(created)", WebLink: null);
         }
+    }
+
+
+    private static object[] BuildGraphAttachments(IEnumerable<EmailAttachment>? attachments)
+    {
+        if (attachments is null) return Array.Empty<object>();
+
+        var list = new List<Dictionary<string, object?>>();
+
+        foreach (var a in attachments)
+        {
+            if (a is null) continue;
+            if (a.ContentBytes is null || a.ContentBytes.Length == 0) continue;
+
+            var name = string.IsNullOrWhiteSpace(a.FileName) ? "inline.png" : a.FileName.Trim();
+            var ct = string.IsNullOrWhiteSpace(a.ContentType) ? "application/octet-stream" : a.ContentType.Trim();
+
+            var cid = a.IsInline
+                ? (string.IsNullOrWhiteSpace(a.ContentId) ? $"{Guid.NewGuid()}@inline" : a.ContentId.Trim())
+                : null;
+
+            list.Add(new Dictionary<string, object?>
+            {
+                ["@odata.type"] = "#microsoft.graph.fileAttachment",
+                ["name"] = name,
+                ["contentType"] = ct,
+                ["contentBytes"] = Convert.ToBase64String(a.ContentBytes),
+                ["isInline"] = a.IsInline,
+                ["contentId"] = cid
+            });
+        }
+
+        return list.Cast<object>().ToArray();
+    }
+
+    private sealed class GraphFileAttachmentPayload
+    {
+        [JsonPropertyName("@odata.type")]
+        public string? ODataType { get; set; }
+
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+
+        [JsonPropertyName("contentType")]
+        public string? ContentType { get; set; }
+
+        [JsonPropertyName("contentBytes")]
+        public string? ContentBytes { get; set; }
+
+        [JsonPropertyName("isInline")]
+        public bool IsInline { get; set; }
+
+        [JsonPropertyName("contentId")]
+        public string? ContentId { get; set; }
     }
 
     private sealed class GraphMessageResponse
