@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿// File: Services/Chat/Pipeline/ChatPipeline.cs
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Ai.AgentFramwork.Massar.Web.Agents;
@@ -27,6 +28,12 @@ public sealed class ChatPipeline
 
     // Optional: allow ChatService to pass the current user id (claims subject, etc.)
     private readonly Func<string?>? _getOwnerUserId;
+
+    // Strip both:
+    // <!--TOOL:...-->
+    // <! -TOOL:...->   (broken/mangled comment that showed in the chat)
+    private static readonly Regex HiddenToolRegex =
+        new(@"<\!\-\-TOOL:.*?\-\->|<\!\-TOOL:.*?\-\>", RegexOptions.Compiled | RegexOptions.Singleline);
 
     public ChatPipeline(
         RouterAgent router,
@@ -75,6 +82,12 @@ public sealed class ChatPipeline
         DecisionDetection Detection,
         DecisionDraft? Draft);
 
+    private static string StripHiddenToolArtifacts(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return text;
+        return HiddenToolRegex.Replace(text, "").Trim();
+    }
+
     public async Task<PipelineResult> ExecuteAsync(string userText, CancellationToken ct = default)
     {
         if (IsIndividualCompensationQuestion(userText))
@@ -111,7 +124,8 @@ public sealed class ChatPipeline
             swTotal.Stop();
             Console.WriteLine($"[PIPELINE] done agent={r.Agent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
 
-            return new PipelineResult(json ?? "No relevant information found.", r.Agent, r.Reason);
+            // keep JSON unchanged, but strip any hidden artifacts just in case
+            return new PipelineResult(StripHiddenToolArtifacts(json ?? "No relevant information found."), r.Agent, r.Reason);
         }
 
         if (r.Agent.Equals(ChatAgentFactory.DocumentEditAgentName, StringComparison.OrdinalIgnoreCase))
@@ -124,7 +138,7 @@ public sealed class ChatPipeline
             swTotal.Stop();
             Console.WriteLine($"[PIPELINE] done agent={r.Agent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
 
-            return new PipelineResult(json ?? "No edit result returned.", r.Agent, r.Reason);
+            return new PipelineResult(StripHiddenToolArtifacts(json ?? "No edit result returned."), r.Agent, r.Reason);
         }
 
         // ----------------------------
@@ -210,7 +224,7 @@ User request:
                 Console.WriteLine($"[PIPELINE] done agent={ChatAgentFactory.SqlAgentName} mode=chart totalMs={swTotal.ElapsedMilliseconds}");
 
                 var text = $"![chart]({url})";
-                return await MaybeAttachDecisionCandidateAsync(userText, text, ChatAgentFactory.SqlAgentName, r.Reason, ct);
+                return await MaybeAttachDecisionCandidateAsync(userText, StripHiddenToolArtifacts(text), ChatAgentFactory.SqlAgentName, r.Reason, ct);
             }
             catch (Exception ex)
             {
@@ -246,7 +260,7 @@ User request:
                     ? tableMd
                     : $"Chart generation failed and table fallback could not be generated.\n\nError: {ex.Message}";
 
-                var checkedFallback = await RunPpiSafeAsync(userText, fallbackMd, ct);
+                var checkedFallback = await RunPpiSafeAsync(userText, StripHiddenToolArtifacts(fallbackMd), ct);
 
                 swTotal.Stop();
                 Console.WriteLine($"[PIPELINE] done agent={ChatAgentFactory.SqlAgentName} mode=chart-fallback totalMs={swTotal.ElapsedMilliseconds}");
@@ -318,8 +332,9 @@ USER REQUEST:
                 sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, retryPrompt, cancellationToken: ct);
             }
 
+            // Keep the nice 1-col table in chat (Improve dialog extracts tables directly from messages)
             var tableMdSimple = FormatSqlAnswerAsSingleColumnTable(userText, sql.Text);
-            var checkedSql = await RunPpiSafeAsync(userText, tableMdSimple, ct);
+            var checkedSql = await RunPpiSafeAsync(userText, StripHiddenToolArtifacts(tableMdSimple), ct);
 
             swTotal.Stop();
             Console.WriteLine($"[PIPELINE] done agent={ChatAgentFactory.SqlAgentName} mode=sql totalMs={swTotal.ElapsedMilliseconds}");
@@ -337,10 +352,10 @@ USER REQUEST:
         {
             swTotal.Stop();
             Console.WriteLine($"[PIPELINE] done agent={call.AgentName} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
-            return new PipelineResult(call.Text, call.AgentName, r.Reason);
+            return new PipelineResult(StripHiddenToolArtifacts(call.Text), call.AgentName, r.Reason);
         }
 
-        var checkedAnswer = await RunPpiSafeAsync(userText, call.Text, ct);
+        var checkedAnswer = await RunPpiSafeAsync(userText, StripHiddenToolArtifacts(call.Text), ct);
 
         swTotal.Stop();
         Console.WriteLine($"[PIPELINE] done agent={call.AgentName} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
@@ -349,7 +364,6 @@ USER REQUEST:
     }
 
     // ✅ Decision hook: attach candidate + add friendly prompt line for UIs that don’t implement the dialog yet
-
     private async Task<PipelineResult> MaybeAttachDecisionCandidateAsync(
         string userText,
         string assistantText,
@@ -357,6 +371,8 @@ USER REQUEST:
         string routerReason,
         CancellationToken ct)
     {
+        assistantText = StripHiddenToolArtifacts(assistantText);
+
         // Don’t attempt decision tracking on JSON attachments responses
         if (LooksLikeJson(assistantText))
             return new PipelineResult(assistantText, routedAgent, routerReason);
@@ -377,8 +393,6 @@ USER REQUEST:
         // Draft is optional; if it fails, UI can still record manually
         var draft = await _decisionTracker.BuildDraftAsync(userText, assistantText, detection, convoId, ownerUserId, ct);
 
-        // ✅ IMPORTANT: do NOT append “Potential decision detected …” into assistantText
-        // The Mud dialog is the UX surface for this.
         var prompt = "Do you want me to record this as a formal decision?";
 
         return new PipelineResult(
@@ -394,20 +408,16 @@ USER REQUEST:
 
         var t = text.Trim().ToLowerInvariant();
 
-        // Common meta prompts
         if (t.Contains("potential decision detected")) return true;
         if (t.Contains("record this as a formal decision")) return true;
 
-        // Common confirmations
         if (t == "yes" || t == "y" || t == "yeah" || t == "yep") return true;
         if (t == "no" || t == "n" || t == "nope") return true;
 
-        // Some UIs might echo the prompt with emojis/formatting
         if (t.Contains("🟡") && t.Contains("decision")) return true;
 
         return false;
     }
-
 
     private static bool LooksLikeJson(string text)
     {
@@ -521,13 +531,11 @@ USER REQUEST:
 
             if (direct is not null && !string.IsNullOrWhiteSpace(direct.ChartType))
             {
-                // Validate single-series schema (Labels+Values)
                 var hasSingle =
                     direct.Labels is { Count: > 0 } &&
                     direct.Values is { Count: > 0 } &&
                     direct.Labels.Count == direct.Values.Count;
 
-                // Validate multi-series schema (Labels+Series[*].Values)
                 var hasMulti =
                     direct.Labels is { Count: > 0 } &&
                     direct.Series is { Count: > 0 } &&
@@ -542,7 +550,7 @@ USER REQUEST:
         }
         catch
         {
-            // fall through to schema normalization
+            // fall through
         }
 
         // 2) Normalize SQL-agent schema: xAxis.categories + series.data.
@@ -561,12 +569,10 @@ USER REQUEST:
             if (TryGetPropIgnoreCase(root, "title", out var titleEl) && titleEl.ValueKind == JsonValueKind.String)
                 title = titleEl.GetString() ?? "Chart";
 
-            // Some models might output "xis" accidentally; you support both.
             JsonElement xObj = default;
             if (!(TryGetPropIgnoreCase(root, "xAxis", out xObj) || TryGetPropIgnoreCase(root, "xis", out xObj)))
                 xObj = default;
 
-            // Categories become Labels
             var labels = new List<string>();
             if (xObj.ValueKind == JsonValueKind.Object &&
                 TryGetPropIgnoreCase(xObj, "categories", out var catsEl) &&
@@ -576,7 +582,6 @@ USER REQUEST:
                     labels.Add(c.GetString() ?? "");
             }
 
-            // Axis titles
             var xAxisLabel = "";
             if (xObj.ValueKind == JsonValueKind.Object &&
                 TryGetPropIgnoreCase(xObj, "title", out var xt) &&
@@ -592,7 +597,6 @@ USER REQUEST:
                 yAxisLabel = yt.ValueKind == JsonValueKind.String ? (yt.GetString() ?? "") : yt.ToString();
             }
 
-            // Series normalization
             var seriesList = new List<ChartSeries>();
             if (TryGetPropIgnoreCase(root, "series", out var sEl) && sEl.ValueKind == JsonValueKind.Array)
             {
@@ -622,7 +626,6 @@ USER REQUEST:
                 }
             }
 
-            // If multiple series, force multicolumn (your renderer uses that)
             if (seriesList.Count > 1)
             {
                 return new ChartPayload
@@ -636,7 +639,6 @@ USER REQUEST:
                 };
             }
 
-            // Single series -> use Values
             var single = seriesList.FirstOrDefault();
             return new ChartPayload
             {
@@ -650,7 +652,6 @@ USER REQUEST:
         }
         catch
         {
-            // Hard fallback ensures chart rendering never blows up the UI.
             return new ChartPayload
             {
                 ChartType = "bar",
@@ -661,9 +662,6 @@ USER REQUEST:
         }
     }
 
-    /// <summary>
-    /// Case-insensitive JSON property fetch helper.
-    /// </summary>
     private static bool TryGetPropIgnoreCase(JsonElement obj, string name, out JsonElement value)
     {
         if (obj.ValueKind == JsonValueKind.Object)
@@ -682,15 +680,12 @@ USER REQUEST:
         return false;
     }
 
-    /// <summary>
-    /// Normalizes chart type tokens to the set your ChatTools understands.
-    /// </summary>
     private static string NormalizeChartType(string? t)
     {
         var s = (t ?? "").Trim().ToLowerInvariant();
         return s switch
         {
-            "column" => "bar",     // your chart tool uses bar to represent column charts
+            "column" => "bar",
             "columns" => "bar",
             "bar" => "bar",
             "pie" => "pie",
@@ -704,10 +699,6 @@ USER REQUEST:
         };
     }
 
-    /// <summary>
-    /// Validates that labels and values are consistent and finite.
-    /// Used to fail fast with a useful exception before chart rendering.
-    /// </summary>
     private static void EnsureValidSeries(string[] labels, double[] values, string seriesName)
     {
         if (labels is null) throw new ArgumentNullException(nameof(labels));
@@ -723,9 +714,6 @@ USER REQUEST:
         }
     }
 
-    /// <summary>
-    /// Renders a chart based on ChartPayload. Returns a URL to a PNG.
-    /// </summary>
     private Task<string> CreateChartAsync(ChartPayload p)
     {
         var t = (p.ChartType ?? "").Trim().ToLowerInvariant();
@@ -733,7 +721,6 @@ USER REQUEST:
         var labels = (p.Labels ?? new List<string>()).ToArray();
         var values = (p.Values ?? new List<double>()).ToArray();
 
-        // Validate non-multi charts (multi validates per-series)
         if (!t.Equals("multicolumn", StringComparison.OrdinalIgnoreCase) &&
             !t.Equals("gauge", StringComparison.OrdinalIgnoreCase))
         {
@@ -795,9 +782,6 @@ USER REQUEST:
         };
     }
 
-    /// <summary>
-    /// Multi-series column chart: validates each series and then delegates to chart tools.
-    /// </summary>
     private Task<string> CreateMultiColumnAsync(ChartPayload p, string[] labels)
     {
         var series = p.Series ?? new List<ChartSeries>();
@@ -825,11 +809,6 @@ USER REQUEST:
             height: 500);
     }
 
-    /// <summary>
-    /// Converts a table JSON schema into markdown.
-    /// Expected schema:
-    /// { "title": "...", "columns": ["A","B"], "rows": [ ["x","y"], ... ] }
-    /// </summary>
     private static bool TryRenderTableMarkdown(string json, out string markdown)
     {
         markdown = "";
@@ -879,9 +858,6 @@ USER REQUEST:
         }
     }
 
-    /// <summary>
-    /// Capitalizes the first character (UI helper).
-    /// </summary>
     private static string Cap(string s)
     {
         if (string.IsNullOrWhiteSpace(s)) return s;
@@ -889,18 +865,6 @@ USER REQUEST:
         return char.ToUpperInvariant(s[0]) + s[1..];
     }
 
-    // =========================
-    // ✅ Simple 1-column table (matches your screenshot)
-    // =========================
-
-    /// <summary>
-    /// Formats SQL result into a simple markdown table:
-    /// | Header |
-    /// |---:|
-    /// | 123 |
-    ///
-    /// Prefers the first integer found anywhere in sqlText.
-    /// </summary>
     private static string FormatSqlAnswerAsSingleColumnTable(string userText, string sqlText)
     {
         var text = (sqlText ?? "").Trim();
@@ -923,9 +887,6 @@ USER REQUEST:
             $"| {EscapeMd(text).Replace("\n", "<br/>")} |\n";
     }
 
-    /// <summary>
-    /// Best-effort label for the table header based on the question.
-    /// </summary>
     private static string GuessHeader(string userText)
     {
         var text = (userText ?? "").Trim();
@@ -934,11 +895,6 @@ USER REQUEST:
 
         var lower = Regex.Replace(text.ToLowerInvariant(), @"\s+", " ");
 
-        // 1) Strong patterns first (non-greedy capture up to common trailing question phrases)
-        // Examples:
-        // "how many employees do we have" -> employees
-        // "how many open tickets are there" -> open tickets
-        // "how many employees in dubai" -> employees (then "in dubai" can be handled elsewhere if you want)
         var strong = new[]
         {
           @"\bhow many\s+(?<thing>.+?)(?:\s+(?:do|does)\s+\w+\s+have|\s+are\s+there|\s+is\s+there|\s+exist|\s+currently|\s+today|\s+right now|\?|$)",
@@ -957,7 +913,6 @@ USER REQUEST:
                 return $"{ToTitleCaseSafe(thing)} Count";
         }
 
-        // 2) Fallback: keyword mapping (safe default)
         if (lower.Contains("employee")) return "Employee Count";
         if (lower.Contains("customer")) return "Customer Count";
         if (lower.Contains("order")) return "Order Count";
@@ -970,36 +925,26 @@ USER REQUEST:
     {
         thing = (thing ?? "").Trim();
 
-        // Remove trailing punctuation
         thing = thing.TrimEnd('?', '.', '!', ',', ';', ':');
 
-        // If the capture still contains helper phrases, cut them off.
-        // e.g. "employees do we have" -> "employees"
-        // e.g. "orders are there" -> "orders"
         thing = Regex.Replace(
             thing,
             @"\b(do|does)\s+\w+\s+have\b.*$|\bare\s+there\b.*$|\bis\s+there\b.*$",
             "",
             RegexOptions.IgnoreCase).Trim();
 
-        // Cut off at common "query modifier" words (you can tune this list)
-        // This keeps headers clean:
-        // "employees in dubai" -> "employees"
-        // "orders by month" -> "orders"
         thing = Regex.Replace(
             thing,
             @"\b(in|for|by|per|with|where|that|who|which|from|between|during|since)\b.*$",
             "",
             RegexOptions.IgnoreCase).Trim();
 
-        // If it’s too long, cap it to avoid ugly headers
         var words = thing.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (words.Length > 6)
             thing = string.Join(' ', words.Take(6));
 
         return thing.Trim();
     }
-
 
     private static string ToTitleCaseSafe(string input)
     {
@@ -1029,9 +974,6 @@ USER REQUEST:
         return string.Join(' ', parts);
     }
 
-    /// <summary>
-    /// Extracts the first integer from a string (e.g., "There are 1,234 employees").
-    /// </summary>
     private static bool TryExtractFirstInteger(string text, out long value)
     {
         value = 0;
@@ -1044,19 +986,12 @@ USER REQUEST:
         return long.TryParse(m.Groups[1].Value, out value);
     }
 
-    /// <summary>
-    /// Escapes markdown table-breaking characters.
-    /// </summary>
     private static string EscapeMd(string s)
     {
         if (string.IsNullOrEmpty(s)) return "";
         return s.Replace("|", "\\|").Trim();
     }
 
-    /// <summary>
-    /// Internal normalized chart payload used by CreateChartAsync.
-    /// Supports single-series (Labels+Values) and multi-series (Labels+Series).
-    /// </summary>
     public sealed class ChartPayload
     {
         public string? ChartType { get; set; }
@@ -1069,15 +1004,11 @@ USER REQUEST:
 
         public List<ChartSeries>? Series { get; set; }
 
-        // gauge
         public double? Value { get; set; }
         public double? Min { get; set; }
         public double? Max { get; set; }
     }
 
-    /// <summary>
-    /// Multi-series chart series definition.
-    /// </summary>
     public sealed class ChartSeries
     {
         public string? Name { get; set; }
@@ -1094,10 +1025,6 @@ USER REQUEST:
         string Type,
         string Reason);
 
-    /// <summary>
-    /// Richer policy classifier than IsIndividualCompensationQuestion.
-    /// You can unify these so you have ONE source of truth for gating.
-    /// </summary>
     private static PolicyDecision ClassifyPolicy(string text)
     {
         if (string.IsNullOrWhiteSpace(text))

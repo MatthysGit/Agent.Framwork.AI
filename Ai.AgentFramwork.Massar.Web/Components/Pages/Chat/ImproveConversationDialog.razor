@@ -1,10 +1,14 @@
 ﻿@* File: Components/Pages/Chat/ImproveConversationDialog.razor *@
 @using MudBlazor
 @using System.Reflection
+@using System.Text
+@using System.Text.Json
+@using System.Text.RegularExpressions
 @using Microsoft.EntityFrameworkCore
 @using Ai.AgentFramwork.Massar.Web.Services.Chat
 @using Ai.AgentFramwork.Massar.Web.DTO
 @using Ai.AgentFramwork.Massar.Web.DBModels
+@using Markdig
 
 @inject Ai.AgentFramwork.Massar.Web.Services.Chat.ChatService ChatService
 @inject Ai.AgentFramwork.Massar.Web.Services.Chat.IImproveConversationService ImproveService
@@ -14,7 +18,7 @@
 <MudDialog Class="pa-2" Style="min-width:900px; min-height:560px;">
     <DialogContent>
         <MudStack Spacing="2">
-@* 
+            @* 
             <MudText Typo="Typo.caption" Color="Color.Secondary">
                 ConversationId: @ConversationId • Messages: @ChatService.Messages.Count
             </MudText> *@
@@ -34,232 +38,138 @@
             }
             else
             {
-@*                 <MudTabs Rounded="true" Elevation="0">
-                    <MudTabPanel Text="Email"> *@
+                <MudStack Spacing="2">
 
-                        <MudStack Spacing="2">
-
-                            @* Compact, professional email header *@
-                            <MudPaper Class="mail-header" Elevation="0" Outlined="true">
-                                <MudStack Spacing="1">
-                                    <MudTextField T="string"
-                                                  @bind-Value="_emailTo"
-                                                  Label="To"
-                                                  Style="font-size:small"
-                                                  Variant="Variant.Outlined"
-                                                  Placeholder="someone@company.com"
-                                                  Disabled="@_sendingEmail"
-                                                  Immediate="true"
-                                                  Validation="ValidateEmails"
-                                                  Dense="true"
-                                                  Margin="Margin.Dense"
-                                                  Class="email-field thin-field"/>
-
-                                    <MudTextField T="string"
-                                                  @bind-Value="_emailCc"
-                                                  Label="Cc"
-                                                  Style="font-size:small"
-                                                  Variant="Variant.Outlined"
-                                                  Placeholder="someone@company.com"
-                                                  Disabled="@_sendingEmail"
-                                                  Immediate="true"
-                                                  Validation="ValidateOptionalEmails"
-                                                  Dense="true"
-                                                  Margin="Margin.Dense"
-                                                  Class="email-field thin-field"/>
-
-                                    <MudTextField T="string"
-                                                  @bind-Value="_emailSubject"
-                                                  Label="Subject"
-                                                  Style="font-size:small"
-                                                  Variant="Variant.Outlined"
-                                                  Disabled="@_sendingEmail"
-                                                  Dense="true"
-                                                  Margin="Margin.Dense"
-                                                  Class="thin-field"/>
-                                </MudStack>
-                            </MudPaper>
-
-                            @* Preview header *@
-
-
-                            @* Bigger preview area *@
-                            <MudPaper Class="mail-preview" Elevation="0" Outlined="true">
-                                @if (!string.IsNullOrWhiteSpace(_emailMarkdown))
-                                {
-                                    <div class="email-preview">
-                                        @((MarkupString)_emailPreviewHtml)
-                                    </div>
-                                }
-                                else
-                                {
-                                    <MudText Typo="Typo.body2" Color="Color.Secondary">No email body.</MudText>
-                                }
-                            </MudPaper>
-
-                            @* Editor is secondary *@
-                            <MudExpansionPanels Elevation="0" Outlined="true">
-                                <MudExpansionPanel Text="Edit email text (Markdown)">
-                                    <MudTextField @bind-Value="_emailMarkdown"
-                                                  Label="Body (Markdown)"
-                                                  Variant="Variant.Outlined"
-                                                  Lines="10"
-                                                  AutoGrow="true"
-                                                  Disabled="@_sendingEmail"/>
-                                </MudExpansionPanel>
-                            </MudExpansionPanels>
-
-                            <MudStack Direction="Row" Style="margin-left:20px" Spacing="1" AlignItems="AlignItems.Start" Class="preview-header">
-                                @* <MudText Typo="Typo.subtitle2">Preview</MudText> *@
-                                <MudSpacer/>
-                                <MudButton Variant="Variant.Outlined"
-                                           Size="Size.Small"
-                                           Disabled="@_sendingEmail"
-                                           OnClick="RefreshPreview">
-                                    Refresh preview
-                                </MudButton>
-                            </MudStack>
-
-                            @if (!string.IsNullOrWhiteSpace(_draftSaveError))
-                            {
-                                <MudAlert Severity="Severity.Error" Dense="true">@_draftSaveError</MudAlert>
-                            }
-
-                            @if (!string.IsNullOrWhiteSpace(_draftSaveSuccess))
-                            {
-                                <MudAlert Severity="Severity.Success" Dense="true">
-                                    @_draftSaveSuccess
-                                    @if (!string.IsNullOrWhiteSpace(_draftWebLink))
-                                    {
-                                        <span> • </span>
-                                        <MudLink Href="@_draftWebLink" Target="_blank">Open draft</MudLink>
-                                    }
-                                </MudAlert>
-                            }
-
-                            @if (!string.IsNullOrWhiteSpace(_emailSendError))
-                            {
-                                <MudAlert Severity="Severity.Error" Dense="true">@_emailSendError</MudAlert>
-                            }
-
-                            @if (!string.IsNullOrWhiteSpace(_emailSendSuccess))
-                            {
-                                <MudAlert Severity="Severity.Success" Dense="true">@_emailSendSuccess</MudAlert>
-                            }
-
-                            <MudStack Direction="Row" Spacing="1" AlignItems="AlignItems.Center" Class="mail-actions">
-                                <MudButton Color="Color.Primary"
-                                           Variant="Variant.Filled"
-                                           Disabled="@(!_canSendEmail || _sendingEmail)"
-                                           OnClick="SendEmailAsync">
-                                    @if (_sendingEmail)
-                                    {
-                                        <MudProgressCircular Indeterminate="true" Size="Size.Small" Class="mr-2"/>
-                                        <span>Sending</span>
-                                    }
-                                    else
-                                    {
-                                        <span>Send Email</span>
-                                    }
-                                </MudButton>
-
-                                @* Replaced Reset draft with Save as draft *@
-                                <MudButton Variant="Variant.Outlined"
-                                           Size="Size.Small"
-                                           Disabled="@(!_canSendEmail || _sendingEmail)"
-                                           OnClick="SaveDraftAsync">
-                                    Save as draft mail
-                                </MudButton>
-
-                                <MudSpacer/>
-
-                                @*           <MudText Typo="Typo.caption" Color="Color.Secondary" Class="hint-right">
-                                    From address is configured server-side (Graph:FromUser).
-                                </MudText> *@
-                            </MudStack>
-
-                            @*                             @if (!string.IsNullOrWhiteSpace(_signatureName))
-                            {
-                                <MudText Typo="Typo.caption" Color="Color.Secondary">
-                                    Signature: @_signatureName
-                                </MudText>
-                            } *@
-                        </MudStack>
-    @*                 </MudTabPanel> *@
-
-                @*     <MudTabPanel Text="Overview">
-                        <MudStack Spacing="2">
-
-                            @if (!string.IsNullOrWhiteSpace(ResultSummary))
-                            {
-                                <MudText Typo="Typo.subtitle2">Summary</MudText>
-                                <MudPaper Class="pa-3" Elevation="0" Outlined="true">
-                                    <MudText Typo="Typo.body2" Style="white-space:pre-wrap">@ResultSummary</MudText>
-                                </MudPaper>
-                            }
-
-                            <MudText Typo="Typo.subtitle2">Key decisions</MudText>
-                            <MudPaper Class="pa-3" Elevation="0" Outlined="true">
-                                @if (DecisionItems.Count > 0)
-                                {
-                                    <MudList T="string" Dense="true">
-                                        @foreach (var d in DecisionItems)
-                                        {
-                                            <MudListItem T="string" Text="@d" />
-                                        }
-                                    </MudList>
-                                }
-                                else
-                                {
-                                    <MudText Typo="Typo.body2" Color="Color.Secondary">No decisions detected.</MudText>
-                                }
-                            </MudPaper>
-
-                            <MudText Typo="Typo.subtitle2">Action items</MudText>
-                            <MudPaper Class="pa-3" Elevation="0" Outlined="true">
-                                @if (ActionItems.Count > 0)
-                                {
-                                    <MudList T="string" Dense="true">
-                                        @foreach (var a in ActionItems)
-                                        {
-                                            <MudListItem T="string" Text="@a" />
-                                        }
-                                    </MudList>
-                                }
-                                else
-                                {
-                                    <MudText Typo="Typo.body2" Color="Color.Secondary">No action items detected.</MudText>
-                                }
-                            </MudPaper>
-
-                            @if (OpenQuestions.Count > 0)
-                            {
-                                <MudText Typo="Typo.subtitle2">Open questions</MudText>
-                                <MudPaper Class="pa-3" Elevation="0" Outlined="true">
-                                    <MudList T="string" Dense="true">
-                                        @foreach (var q in OpenQuestions)
-                                        {
-                                            <MudListItem T="string" Text="@q" />
-                                        }
-                                    </MudList>
-                                </MudPaper>
-                            }
-
-                        </MudStack>
-                    </MudTabPanel> *@
-
-@*                     <MudTabPanel Text="Spec">
+                    @* Compact, professional email header *@
+                    <MudPaper Class="mail-header" Elevation="0" Outlined="true">
                         <MudStack Spacing="1">
-                            <MudText Typo="Typo.subtitle2">Short spec</MudText>
-                            <MudPaper Class="pa-3" Elevation="0" Outlined="true">
-                                <MudText Typo="Typo.body2" Style="white-space:pre-wrap">
-                                    @(ResultSpec ?? "No spec returned.")
-                                </MudText>
-                            </MudPaper>
-                        </MudStack>
-                    </MudTabPanel> *@
+                            <MudTextField T="string"
+                                          @bind-Value="_emailTo"
+                                          Label="To"
+                                          Style="font-size:small"
+                                          Variant="Variant.Outlined"
+                                          Placeholder="someone@company.com"
+                                          Disabled="@_sendingEmail"
+                                          Immediate="true"
+                                          Validation="ValidateEmails"
+                                          Dense="true"
+                                          Margin="Margin.Dense"
+                                          Class="email-field thin-field" />
 
-            @*     </MudTabs> *@
+                            <MudTextField T="string"
+                                          @bind-Value="_emailCc"
+                                          Label="Cc"
+                                          Style="font-size:small"
+                                          Variant="Variant.Outlined"
+                                          Placeholder="someone@company.com"
+                                          Disabled="@_sendingEmail"
+                                          Immediate="true"
+                                          Validation="ValidateOptionalEmails"
+                                          Dense="true"
+                                          Margin="Margin.Dense"
+                                          Class="email-field thin-field" />
+
+                            <MudTextField T="string"
+                                          @bind-Value="_emailSubject"
+                                          Label="Subject"
+                                          Style="font-size:small"
+                                          Variant="Variant.Outlined"
+                                          Disabled="@_sendingEmail"
+                                          Dense="true"
+                                          Margin="Margin.Dense"
+                                          Class="thin-field" />
+                        </MudStack>
+                    </MudPaper>
+
+                    @* Bigger preview area *@
+                    <MudPaper Class="mail-preview" Elevation="0" Outlined="true">
+                        @if (!string.IsNullOrWhiteSpace(_emailMarkdown))
+                        {
+                            <div class="email-preview">
+                                @((MarkupString)_emailPreviewHtml)
+                            </div>
+                        }
+                        else
+                        {
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">No email body.</MudText>
+                        }
+                    </MudPaper>
+
+                    @* Editor is secondary *@
+                    <MudExpansionPanels Elevation="0" Outlined="true">
+                        <MudExpansionPanel Text="Edit email text (Markdown)">
+                            <MudTextField @bind-Value="_emailMarkdown"
+                                          Label="Body (Markdown)"
+                                          Variant="Variant.Outlined"
+                                          Lines="10"
+                                          AutoGrow="true"
+                                          Disabled="@_sendingEmail" />
+                        </MudExpansionPanel>
+                    </MudExpansionPanels>
+
+                    <MudStack Direction="Row" Style="margin-left:20px" Spacing="1" AlignItems="AlignItems.Start" Class="preview-header">
+                        <MudSpacer />
+                        <MudButton Variant="Variant.Outlined"
+                                   Size="Size.Small"
+                                   Disabled="@_sendingEmail"
+                                   OnClick="RefreshPreview">
+                            Refresh preview
+                        </MudButton>
+                    </MudStack>
+
+                    @if (!string.IsNullOrWhiteSpace(_draftSaveError))
+                    {
+                        <MudAlert Severity="Severity.Error" Dense="true">@_draftSaveError</MudAlert>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(_draftSaveSuccess))
+                    {
+                        <MudAlert Severity="Severity.Success" Dense="true">
+                            @_draftSaveSuccess
+                            @if (!string.IsNullOrWhiteSpace(_draftWebLink))
+                            {
+                                <span> • </span>
+                                <MudLink Href="@_draftWebLink" Target="_blank">Open draft</MudLink>
+                            }
+                        </MudAlert>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(_emailSendError))
+                    {
+                        <MudAlert Severity="Severity.Error" Dense="true">@_emailSendError</MudAlert>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(_emailSendSuccess))
+                    {
+                        <MudAlert Severity="Severity.Success" Dense="true">@_emailSendSuccess</MudAlert>
+                    }
+
+                    <MudStack Direction="Row" Spacing="1" AlignItems="AlignItems.Center" Class="mail-actions">
+                        <MudButton Color="Color.Primary"
+                                   Variant="Variant.Filled"
+                                   Disabled="@(!_canSendEmail || _sendingEmail)"
+                                   OnClick="SendEmailAsync">
+                            @if (_sendingEmail)
+                            {
+                                <MudProgressCircular Indeterminate="true" Size="Size.Small" Class="mr-2" />
+                                <span>Sending</span>
+                            }
+                            else
+                            {
+                                <span>Send Email</span>
+                            }
+                        </MudButton>
+
+                        <MudButton Variant="Variant.Outlined"
+                                   Size="Size.Small"
+                                   Disabled="@(!_canSendEmail || _sendingEmail)"
+                                   OnClick="SaveDraftAsync">
+                            Save as draft mail
+                        </MudButton>
+
+                        <MudSpacer />
+                    </MudStack>
+                </MudStack>
             }
 
         </MudStack>
@@ -284,7 +194,6 @@
     /* Thinner outlined fields WITHOUT label overlap (use padding, not label transforms) */
     .thin-field .mud-input-root {
         min-height: 24px;
-       
     }
 
     /* Tighten vertical padding + add left padding so text doesn't sit under label/notch */
@@ -339,6 +248,25 @@
             margin: 0 0 12px 0;
         }
 
+        .email-preview table {
+            border-collapse: collapse;
+            margin-top: 8px;
+            margin-bottom: 16px;
+        }
+
+        .email-preview th,
+        .email-preview td {
+            border: 1px solid #d0d0d0;
+            padding: 6px 10px;
+            font-size: 13px;
+            text-align: left;
+        }
+
+        .email-preview th {
+            background: #f5f5f5;
+            font-weight: 600;
+        }
+
         .email-preview h1,
         .email-preview h2,
         .email-preview h3,
@@ -391,6 +319,21 @@
     [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
     [Parameter] public Guid ConversationId { get; set; }
 
+    // Strip both:
+    // <!--TOOL:...-->
+    // <! -TOOL:...->   (broken/mangled comment that showed in the chat)
+    private static readonly Regex HiddenToolRegex =
+        new(@"<\!\-\-TOOL:.*?\-\->|<\!\-TOOL:.*?\-\>", RegexOptions.Compiled | RegexOptions.Singleline);
+
+    // Capture markdown pipe tables as blocks
+    // - header row starting with |
+    // - separator row containing --- and pipes
+    // - one or more body rows starting with |
+    private static readonly Regex MarkdownTableBlockRegex =
+        new(
+            @"(?m)^\|[^\n]*\|\s*\r?\n^\|[ \t:\-|\+]*\-{3,}[ \t:\-|\+]*\|\s*\r?\n(?:^\|[^\n]*\|\s*\r?\n?)+",
+            RegexOptions.Compiled);
+
     private bool _busy = true;
     private bool _loadedOnce;
     private string? _error;
@@ -425,6 +368,67 @@
         _busy = true;
         _error = null;
         _result = null;
+    }
+
+    private static string StripHiddenToolArtifacts(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return text;
+        return HiddenToolRegex.Replace(text, "").Trim();
+    }
+
+    // ✅ New: extract tables from the actual assistant messages (no hidden markers required)
+    private static List<string> ExtractMarkdownTablesFromMessages(IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages)
+    {
+        var tables = new List<string>();
+
+        foreach (var m in messages)
+        {
+            var text = m?.Text;
+            if (string.IsNullOrWhiteSpace(text)) continue;
+
+            text = StripHiddenToolArtifacts(text);
+
+            // Collect all table blocks
+            foreach (Match match in MarkdownTableBlockRegex.Matches(text))
+            {
+                var md = match.Value?.Trim();
+                if (!string.IsNullOrWhiteSpace(md))
+                    tables.Add(NormalizeMarkdownTable(md!));
+            }
+        }
+
+        // de-dupe but keep order
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var outList = new List<string>();
+        foreach (var t in tables)
+        {
+            if (seen.Add(t))
+                outList.Add(t);
+        }
+
+        return outList;
+    }
+
+    private static string BuildSqlResultsAppendixMarkdown(IEnumerable<string> tables)
+    {
+        var list = tables?.Where(t => !string.IsNullOrWhiteSpace(t)).ToList() ?? new List<string>();
+        if (list.Count == 0) return "";
+
+        var sb = new StringBuilder();
+        sb.AppendLine();
+        sb.AppendLine("### Results");
+        sb.AppendLine();
+
+        int i = 1;
+        foreach (var t in list)
+        {
+            sb.AppendLine($"#### Result {i++}");
+            sb.AppendLine();
+            sb.AppendLine(NormalizeMarkdownTable(t));
+            sb.AppendLine();
+        }
+
+        return sb.ToString();
     }
 
     private string? ValidateEmails(string value)
@@ -546,6 +550,19 @@
             // ✅ Replace placeholder signature with real name
             _emailMarkdown = ApplySignature(md, _signatureName);
 
+            // ✅ Append SQL results tables from the actual conversation messages (no markers)
+            var tables = ExtractMarkdownTablesFromMessages(ChatService.Messages);
+            var appendix = BuildSqlResultsAppendixMarkdown(tables);
+
+            if (!string.IsNullOrWhiteSpace(appendix) &&
+                !_emailMarkdown.Contains("### Results", StringComparison.OrdinalIgnoreCase) &&
+                !_emailMarkdown.Contains("## Results", StringComparison.OrdinalIgnoreCase))
+            {
+                _emailMarkdown = _emailMarkdown.TrimEnd() + "\n\n" + appendix.Trim() + "\n";
+            }
+
+            _emailMarkdown = StripHiddenToolArtifacts(_emailMarkdown);
+
             RefreshPreview();
         }
         catch (Exception ex)
@@ -556,6 +573,70 @@
         {
             _busy = false;
         }
+    }
+
+    private static string NormalizeMarkdownTable(string md)
+    {
+        if (string.IsNullOrWhiteSpace(md)) return md;
+
+        // Sometimes we end up with literal "\n" inside JSON strings
+        var t = md.Trim().Replace("\\r\\n", "\n").Replace("\\n", "\n").Replace("\r\n", "\n");
+
+        // If it already has multiple lines and looks like a table, keep it
+        if (t.Contains("\n") && t.Contains("|---"))
+            return t;
+
+        // If it looks like flattened pipe-table text, rebuild into real markdown table lines.
+        // Example seen: "| Employees Count | |---:| | 290 |"
+        if (t.Contains("|") && t.Contains("|---"))
+        {
+            var parts = t.Split('|', StringSplitOptions.RemoveEmptyEntries)
+                         .Select(p => p.Trim())
+                         .Where(p => p.Length > 0)
+                         .ToList();
+
+            // Find the separator token (---, ---:, :---, :---:)
+            var sepIndex = parts.FindIndex(p =>
+                p.StartsWith("---", StringComparison.Ordinal) ||
+                p.StartsWith(":---", StringComparison.Ordinal) ||
+                p.EndsWith("---", StringComparison.Ordinal) ||
+                p.EndsWith("---:", StringComparison.Ordinal));
+
+            if (sepIndex >= 1)
+            {
+                var headers = parts.Take(sepIndex).ToArray();
+
+                var sepToken = parts[sepIndex];
+                var seps = Enumerable.Repeat(sepToken, headers.Length).ToArray();
+
+                var values = parts.Skip(sepIndex + 1).ToList();
+
+                var sb = new StringBuilder();
+                sb.AppendLine("| " + string.Join(" | ", headers) + " |");
+                sb.AppendLine("| " + string.Join(" | ", seps) + " |");
+
+                if (headers.Length == 1)
+                {
+                    foreach (var v in values.DefaultIfEmpty(""))
+                        sb.AppendLine($"| {v} |");
+                }
+                else
+                {
+                    for (int i = 0; i < values.Count; i += headers.Length)
+                    {
+                        var row = values.Skip(i).Take(headers.Length).ToArray();
+                        if (row.Length < headers.Length)
+                            row = row.Concat(Enumerable.Repeat("", headers.Length - row.Length)).ToArray();
+
+                        sb.AppendLine("| " + string.Join(" | ", row) + " |");
+                    }
+                }
+
+                return sb.ToString().TrimEnd();
+            }
+        }
+
+        return t;
     }
 
     private async Task SaveDraftAsync()
@@ -593,6 +674,8 @@
 
         try
         {
+            _emailMarkdown = StripHiddenToolArtifacts(_emailMarkdown ?? "");
+
             // ensure signature is correct right before saving
             _emailMarkdown = ApplySignature(_emailMarkdown ?? "", _signatureName);
 
@@ -745,6 +828,8 @@
 
         try
         {
+            _emailMarkdown = StripHiddenToolArtifacts(_emailMarkdown ?? "");
+
             // ✅ ensure signature is correct right before sending
             _emailMarkdown = ApplySignature(_emailMarkdown ?? "", _signatureName);
 
@@ -876,17 +961,80 @@
     }
 
     // ✅ Used for the in-app preview (CSS handles spacing; we keep HTML clean)
-    private static string RenderEmailBodyHtml(string markdown)
-        => global::Markdig.Markdown.ToHtml(markdown ?? "");
+    private static readonly global::Markdig.MarkdownPipeline _mdPipeline =
+        new global::Markdig.MarkdownPipelineBuilder()
+            .UseAdvancedExtensions() // ✅ includes pipe tables
+            .Build();
 
+    private static string RenderEmailBodyHtml(string markdown)
+        => global::Markdig.Markdown.ToHtml(markdown ?? "", _mdPipeline);
+
+    // ✅ Used for sending/draft (inline styles so email clients render consistently)
     // ✅ Used for sending/draft (inline styles so email clients render consistently)
     private static string RenderEmailHtmlForSending(string markdown)
     {
         var bodyHtml = RenderEmailBodyHtml(markdown ?? "");
 
+        // Outlook is much more reliable with inline styles than <style> blocks.
+        // We inject/merge inline style into table/th/td even when they already have attributes.
+        string InjectStyle(string html, string tag, string styleToAdd)
+        {
+            // Matches: <tag ...> capturing full attribute text (if any)
+            var openTag = new Regex($@"<\s*{tag}\b(?<attrs>[^>]*)>",
+                RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+            return openTag.Replace(html, m =>
+            {
+                var attrs = m.Groups["attrs"].Value ?? "";
+
+                // If tag already has style="", append to it.
+                var styleAttr = Regex.Match(attrs, @"\bstyle\s*=\s*""(?<s>[^""]*)""",
+                    RegexOptions.IgnoreCase);
+
+                if (styleAttr.Success)
+                {
+                    var existing = styleAttr.Groups["s"].Value ?? "";
+                    // Append our styles after existing (ours wins if duplicate keys)
+                    var merged = (existing.Trim().TrimEnd(';') + ";" + styleToAdd).Trim().TrimEnd(';') + ";";
+
+                    // Replace only the style value
+                    attrs = Regex.Replace(
+                        attrs,
+                        @"\bstyle\s*=\s*""[^""]*""",
+                        $" style=\"{merged}\"",
+                        RegexOptions.IgnoreCase);
+                }
+                else
+                {
+                    // No style attribute — add one.
+                    attrs += $" style=\"{styleToAdd};\"";
+                }
+
+                return $"<{tag}{attrs}>";
+            });
+        }
+
+        // Table: collapse borders and remove Outlook table spacing; keep it compact.
+        bodyHtml = InjectStyle(
+            bodyHtml,
+            "table",
+            "border-collapse:collapse;border-spacing:0;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:6px 0");
+
+        // TH: dense padding, small font, borders, header background.
+        bodyHtml = InjectStyle(
+            bodyHtml,
+            "th",
+            "border:1px solid #d0d0d0;padding:3px 6px;font-size:12px;line-height:1.15;font-weight:600;background-color:#f5f5f5;white-space:nowrap");
+
+        // TD: dense padding, small font, borders.
+        bodyHtml = InjectStyle(
+            bodyHtml,
+            "td",
+            "border:1px solid #d0d0d0;padding:3px 6px;font-size:12px;line-height:1.15");
+
         return $@"
 <div style=""font-family: Arial, sans-serif; font-size: 14px; line-height: 1.45; color:#111;"">
-  {bodyHtml}
+{bodyHtml}
 </div>";
     }
 
