@@ -353,7 +353,7 @@ app.MapPost("/api/email/send", async (
 {
     // ✅ You removed Markdig package; use the signed one brought by Microsoft.Extensions.DataIngestion.Markdig
     var html = global::Markdig.Markdown.ToHtml(req.BodyMarkdown ?? "");
-    await mailer.SendAsync(req.To, req.Subject, html, req.Cc, req.SaveToSentItems, ct);
+    await mailer.SendAsync(req.To, req.Subject, html, req.Cc, req.SaveToSentItems, attachments: null, ct: ct);
     return Results.Ok(new { sent = true });
 })
     .RequireAuthorization();
