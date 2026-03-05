@@ -279,23 +279,20 @@ User request:
         // ----------------------------
         // SQL enforcement path (plain text -> render as table; attach hidden payload for email)
         // ----------------------------
-        if (r.Agent.Equals(ChatAgentFactory.SqlAgentName, StringComparison.OrdinalIgnoreCase) &&
+        if ((r.Agent.Equals(ChatAgentFactory.SqlAgentName, StringComparison.OrdinalIgnoreCase) ||
+             r.Agent.Equals("DataExplorer", StringComparison.OrdinalIgnoreCase) ||
+             r.Agent.Equals(ChatAgentFactory.DataExplorerAgentName, StringComparison.OrdinalIgnoreCase)) &&
             !r.Mode.Equals("chart", StringComparison.OrdinalIgnoreCase))
         {
-
-            var wantsTable = LooksTabularUserRequest(userText);
-
-            // If the user asked for a breakdown/list (multi-row), force the SQL agent to return the SELECT tool JSON
-            // so we can render a proper table in the chat.
-            var enforcedSqlPrompt = wantsTable
-                ? string.Format(@"
-You are the SQL agent for THIS application's database.
+            // Always force the agent to return the SqlServerSelectTool JSON payload so the UI can render
+            // the SSMS-like table using the exact column names from the database (e.g., TotalSales).
+            var enforcedSqlPrompt = string.Format(@"
+You are the SQL data exploration agent for THIS application's database.
 
 NON-NEGOTIABLE RULES:
 - You MUST NOT ask the user any questions.
 - You MUST produce the best possible answer by using database tools.
 - If the request is underspecified, choose the most reasonable interpretation and proceed.
-- NEVER respond with: 'Could you clarify...' / 'Please provide more context...' / any question.
 
 CRITICAL TOOL ORDER RULE (MUST FOLLOW):
 - At the START of EVERY user request, you MUST call TableAndViewsInDatabse first.
@@ -303,43 +300,22 @@ CRITICAL TOOL ORDER RULE (MUST FOLLOW):
 - If you need any table/column info, call TableColumsByTable / TableRelationships ONLY AFTER TableAndViewsInDatabse.
 - If TableAndViewsInDatabse fails or returns empty, reply exactly: unauthorized access.
 
-OUTPUT RULE:
-- You MUST return ONLY the JSON returned by the database SELECT tool (ExecuteSelectAsync / SqlServerSelectTool).
+OUTPUT RULE (MANDATORY):
+- You MUST return ONLY the JSON returned by ExecuteSelectAsync (SqlServerSelectTool).
 - No markdown, no prose, no extra keys, no wrapping.
 
 USER REQUEST:
 {0}
-", userText)
-                : string.Format(@"
-You are the SQL agent for THIS application's database.
-
-NON-NEGOTIABLE RULES:
-- You MUST NOT ask the user any questions.
-- You MUST produce the best possible answer by using database tools.
-- If the request is underspecified, choose the most reasonable interpretation and proceed.
-- NEVER respond with: 'Could you clarify...' / 'Please provide more context...' / any question.
-
-CRITICAL TOOL ORDER RULE (MUST FOLLOW):
-- At the START of EVERY user request, you MUST call TableAndViewsInDatabse first.
-- You MUST NOT call ExecuteSelectAsync until AFTER you have called TableAndViewsInDatabse for this request.
-- If you need any table/column info, call TableColumsByTable / TableRelationships ONLY AFTER TableAndViewsInDatabse.
-- If TableAndViewsInDatabse fails or returns empty, reply exactly: unauthorized access.
-
-OUTPUT RULE:
-- Return plain text only (no JSON, no markdown).
-- Include the number in the response (e.g., '290').
-
-USER REQUEST:
-{0}
 ", userText);
-            var sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, enforcedSqlPrompt, cancellationToken: ct);
+
+            var sql = await _caller.CallAgentAsync(r.Agent, enforcedSqlPrompt, cancellationToken: ct);
 
             if (LooksLikeClarifyingQuestion(sql.Text))
             {
-                Console.WriteLine("[SQL_RETRY] SQL agent returned a question. Retrying with stricter enforcement.");
+                Console.WriteLine($"[SQL_RETRY] {r.Agent} returned a question. Retrying with stricter enforcement.");
 
                 var retryPrompt = string.Format(@"
-You are the SQL agent.
+You are the SQL data exploration agent.
 
 You returned a clarifying question previously. That is NOT allowed.
 
@@ -352,15 +328,16 @@ CRITICAL TOOL ORDER RULE (MUST FOLLOW):
 - If you need any table/column info, call TableColumsByTable / TableRelationships ONLY AFTER TableAndViewsInDatabse.
 - If TableAndViewsInDatabse fails or returns empty, reply exactly: unauthorized access.
 
-Return plain text only.
+OUTPUT RULE (MANDATORY):
+- You MUST return ONLY the JSON returned by ExecuteSelectAsync (SqlServerSelectTool).
+- No markdown, no prose, no extra keys, no wrapping.
 
 USER REQUEST:
 {0}
 ", userText);
 
-                sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, retryPrompt, cancellationToken: ct);
+                sql = await _caller.CallAgentAsync(r.Agent, retryPrompt, cancellationToken: ct);
             }
-
             // ✅ FIX: If tool returned a "rows" JSON payload, render it as a proper table (NOT a 1-col "first number" table)
             var raw = (sql.Text ?? "").Trim();
             string tableMdSimple;
@@ -387,9 +364,9 @@ USER REQUEST:
             var checkedSql = await RunPpiSafeAsync(userText, tableMdSimple, ct);
 
             swTotal.Stop();
-            Console.WriteLine($"[PIPELINE] done agent={ChatAgentFactory.SqlAgentName} mode=sql totalMs={swTotal.ElapsedMilliseconds}");
+            Console.WriteLine($"[PIPELINE] done agent={r.Agent} mode=sql totalMs={swTotal.ElapsedMilliseconds}");
 
-            return await MaybeAttachDecisionCandidateAsync(userText, checkedSql, ChatAgentFactory.SqlAgentName, r.Reason, ct);
+            return await MaybeAttachDecisionCandidateAsync(userText, checkedSql, r.Agent, r.Reason, ct);
         }
 
         // ----------------------------
