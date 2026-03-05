@@ -13,12 +13,16 @@
   <ItemGroup>
     <Compile Remove="App_Data\NewFolder\**" />
     <Compile Remove="App_Data\t\**" />
+    <Compile Remove="Services\ExcelService\**" />
     <Content Remove="App_Data\NewFolder\**" />
     <Content Remove="App_Data\t\**" />
+    <Content Remove="Services\ExcelService\**" />
     <EmbeddedResource Remove="App_Data\NewFolder\**" />
     <EmbeddedResource Remove="App_Data\t\**" />
+    <EmbeddedResource Remove="Services\ExcelService\**" />
     <None Remove="App_Data\NewFolder\**" />
     <None Remove="App_Data\t\**" />
+    <None Remove="Services\ExcelService\**" />
     <EmbeddedResource Include="Services\Chat\AgentPrompts\*.md" />
   </ItemGroup>
 

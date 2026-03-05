@@ -24,6 +24,7 @@ public sealed class ChatAgentFactory
     public const string DocumentEditAgentName = "DocumentEditAgent";
     public const string OrchestratorAgentName = "OrchestratorAgent";
     public const string PpiAgentName = "PpiAgent";
+    public const string ExcelAnalyticsAgentName = "ExcelAnalyticsAgent";
 
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
     private readonly IConfiguration _configuration;
@@ -84,6 +85,14 @@ public sealed class ChatAgentFactory
 
         _registry.Register(PpiAgentName, (sp, chatClient) =>
             new PpiAgent().Build(chatClient, PpiAgentName));
+
+
+        _registry.Register(ExcelAnalyticsAgentName, (sp, chatClient) =>
+        {
+            var excelTool = sp.GetRequiredService<ExcelAnalyticsToolWrapper>();
+            return new ExcelAnalyticsAgent().Build(chatClient, ExcelAnalyticsAgentName, excelTool);
+        });
+
 
         // ✅ Caller chooses model at runtime per agent
         var caller = new AgentCallerTool(

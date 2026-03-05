@@ -2,6 +2,7 @@
 using Microsoft.Extensions.AI;
 using OpenAI.Chat;
 using Ai.AgentFramwork.Massar.Web.Services.Chat;
+using System.Linq;
 
 namespace Ai.AgentFramwork.Massar.Web.Agents;
 
@@ -25,8 +26,7 @@ public sealed class RouterAgent
 
     public async Task<RouteResult> RouteAsync(string userMessage, CancellationToken ct = default)
     {
-        // Hard guard: if this is clearly a "what is included / what does it say" doc question,
-        // always route to DocumentSearchAgent (unless it is editing intent).
+        // Hard guard: document editing intent always wins.
         if (IsDocumentEditIntent(userMessage))
         {
             return new RouteResult(
@@ -35,6 +35,16 @@ public sealed class RouterAgent
                 Reason: "Hard-guard: document edit intent detected.");
         }
 
+        // Hard guard: spreadsheet analytics intent (must happen BEFORE document-content guard)
+        if (IsExcelAnalyticsIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.ExcelAnalyticsAgentName,
+                Reason: "Hard-guard: spreadsheet analytics intent detected.");
+        }
+
+        // Hard guard: "what is included / what does it say" doc questions
         if (IsDocumentContentQuestion(userMessage))
         {
             return new RouteResult(
@@ -51,56 +61,74 @@ public sealed class RouterAgent
 
         var transcript = string.Join("\n", last);
 
-        // IMPORTANT: use $$""" so JSON braces are treated as literal content
+        // IMPORTANT: use $$$""" so JSON braces are treated as literal content
         var system = $$$"""
 You are the ROUTER only. Do NOT call tools. Do NOT answer the user.
 Return ONLY strict JSON.
 
 Schema (return exactly this shape):
 {
-  "mode": "agent" | "chart",
-  "agent": "{{{ChatAgentFactory.SqlAgentName}}}" | "{{{ChatAgentFactory.DocumentSearchAgentName}}}" | "{{{ChatAgentFactory.DocumentEditAgentName}}}" | "{{{ChatAgentFactory.LlmChatAgentName}}}",
-  "reason": "<short reason>",
-  "chartType": "bar"|"pie"|"line"|"area"|"donut"|"gauge"|"progress"|"multicolumn"|null
+  \"mode\": \"agent\" | \"chart\",
+  \"agent\": \"{{{ChatAgentFactory.SqlAgentName}}}\" 
+        | \"{{{ChatAgentFactory.DocumentSearchAgentName}}}\" 
+        | \"{{{ChatAgentFactory.DocumentEditAgentName}}}\"
+        | \"{{{ChatAgentFactory.ExcelAnalyticsAgentName}}}\"
+        | \"{{{ChatAgentFactory.LlmChatAgentName}}}\",
+  \"reason\": \"<short reason>\",
+  \"chartType\": \"bar\"|\"pie\"|\"line\"|\"area\"|\"donut\"|\"gauge\"|\"progress\"|\"multicolumn\"|null
 }
 
 ABSOLUTE DOCUMENT ROUTING RULES (MUST FOLLOW):
 
 A) DOCUMENT EDIT INTENT (HIGHEST PRIORITY):
 - If the user requests to edit/review/comment/annotate/highlight/suggest changes/track changes/rewrite/fix grammar/modify a document,
-  choose agent "{{{ChatAgentFactory.DocumentEditAgentName}}}".
+  choose agent \"{{{ChatAgentFactory.DocumentEditAgentName}}}\".
 
-B) DOCUMENT SEARCH / LOOKUP INTENT (ONLY IF NOT EDITING):
+A2) EXCEL / SPREADSHEET ANALYTICS INTENT (HIGH PRIORITY, ONLY IF NOT EDITING):
+- If the user asks to analyze a spreadsheet (insights, trends, KPIs, dashboard, anomalies, top items, financial/sales analysis),
+  choose agent \"{{{ChatAgentFactory.ExcelAnalyticsAgentName}}}\".
+- This is true even if the message mentions xlsx/xls/csv or contains an attachment link.
+- Examples:
+  - \"Analyze this spreadsheet\"
+  - \"Generate insights from the attached Excel\"
+  - \"Create a dashboard / KPIs\"
+  - \"Find top categories and a trend chart\"
+  - \"Summarize sales performance and plot revenue over time\"
+
+B) DOCUMENT SEARCH / LOOKUP INTENT (ONLY IF NOT EDITING OR EXCEL ANALYTICS):
 - If the user's message OR recent chat context indicates they want information contained in a document (policy/contract/agreement/kit),
-  you MUST choose agent "{{{ChatAgentFactory.DocumentSearchAgentName}}}".
+  you MUST choose agent \"{{{ChatAgentFactory.DocumentSearchAgentName}}}\".
   This includes questions like:
-  - "what is included in the survival kit"
-  - "what is included in the policy"
-  - "what does the contract say"
-  - "what is in the agreement"
-  - "what does the document say about ..."
-  - "summarize the policy/contract"
-  - "according to the document/policy/contract ..."
-- Also choose "{{{ChatAgentFactory.DocumentSearchAgentName}}}" if the message OR recent chat context contains ANY of:
+  - \"what is included in the survival kit\"
+  - \"what is included in the policy\"
+  - \"what does the contract say\"
+  - \"what is in the agreement\"
+  - \"what does the document say about ...\"
+  - \"summarize the policy/contract\"
+  - \"according to the document/policy/contract ...\"
+- Also choose \"{{{ChatAgentFactory.DocumentSearchAgentName}}}\" if the message OR recent chat context contains ANY of:
   - '/api/chat/attachments/' or '/documents/files/download/'
-  - pdf, doc, docx, txt, csv, xls, xlsx
+  - pdf, doc, docx, txt
   - 'according to', 'in the document', 'in the pdf', 'from the file', 'what does it say', 'summarize', 'quote', 'cite'
+NOTE:
+- Do NOT route to DocumentSearchAgent just because of csv/xls/xlsx if the intent is analytics/insights/KPIs/dashboard/charts.
 
 CHART RULE:
 - If user asks for a chart/plot/graph AND it requires ANY SQL/database query:
-  mode="chart", agent="{{{ChatAgentFactory.SqlAgentName}}}", chartType best fit.
+  mode=\"chart\", agent=\"{{{ChatAgentFactory.SqlAgentName}}}\", chartType best fit.
 
 SQL RULE:
-- If clearly SQL/database (not chart) => agent "{{{ChatAgentFactory.SqlAgentName}}}".
+- If clearly SQL/database (not chart) => agent \"{{{ChatAgentFactory.SqlAgentName}}}\".
 
 SQL INTENT KEYWORDS (ROUTE TO SQL AGENT):
 - If the user asks for: count / how many / number of / total / sum / avg / average / min / max
 - Or asks for: breakdown / grouped by / per / by <dimension>
 - Or mentions database/query/select/sql/table/view
 - Or asks about business metrics like: employees, headcount, sales, revenue, orders, invoices, territories
-=> choose agent "{{ChatAgentFactory.SqlAgentName}}" (mode="agent" unless chart requested).
+=> choose agent \"{{{ChatAgentFactory.SqlAgentName}}}\" (mode=\"agent\" unless chart requested).
+
 FALLBACK:
-- Otherwise => agent "{{{ChatAgentFactory.LlmChatAgentName}}}".
+- Otherwise => agent \"{{{ChatAgentFactory.LlmChatAgentName}}}\".
 
 Return ONLY JSON. No markdown. No extra keys.
 """;
@@ -137,9 +165,12 @@ User message:
             if (mode != "agent" && mode != "chart")
                 mode = "agent";
 
-            // Final hard-guard (in case model output contradicts intent)
+            // Final hard-guards (in case model output contradicts intent)
             if (IsDocumentEditIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.DocumentEditAgentName, "Hard-guard: document edit intent detected.");
+
+            if (IsExcelAnalyticsIntent(userMessage))
+                return new RouteResult("agent", ChatAgentFactory.ExcelAnalyticsAgentName, "Hard-guard: spreadsheet analytics intent detected.");
 
             if (IsDocumentContentQuestion(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.DocumentSearchAgentName, "Hard-guard: document content question detected.");
@@ -155,6 +186,10 @@ User message:
     private static bool IsDocumentContentQuestion(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
+
+        // ✅ Important: do NOT treat spreadsheet analytics as document-search
+        if (IsExcelAnalyticsIntent(text))
+            return false;
 
         var t = text.ToLowerInvariant();
 
@@ -186,7 +221,7 @@ User message:
             t.Contains("survival kit") ||
             t.Contains("kit");
 
-        // Links / attachment markers
+        // Links / attachment markers (keep, but excel analytics is excluded above)
         var hasLinkMarkers =
             t.Contains("/api/chat/attachments/") ||
             t.Contains("/documents/files/download/");
@@ -224,5 +259,54 @@ User message:
                || t.Contains("rewrite")
                || t.Contains("fix grammar")
                || t.Contains("make changes");
+    }
+
+    private static bool IsExcelAnalyticsIntent(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        var t = text.ToLowerInvariant();
+
+        // Spreadsheet hints
+        var mentionsSpreadsheet =
+            t.Contains("excel") || t.Contains("spreadsheet") || t.Contains("worksheet") ||
+            t.Contains("xlsx") || t.Contains("xls") || t.Contains("csv") ||
+            t.Contains("/api/chat/attachments/") || t.Contains("/documents/files/download/");
+
+        // Analytics intent
+        var analytics =
+            t.Contains("analy") ||            // analyze/analysis/analytics
+            t.Contains("insight") ||
+            t.Contains("kpi") ||
+            t.Contains("dashboard") ||
+            t.Contains("trend") ||
+            t.Contains("forecast") ||
+            t.Contains("outlier") ||
+            t.Contains("anomal") ||           // anomaly/anomalies
+            t.Contains("top ") ||
+            t.Contains("breakdown") ||
+            t.Contains("group") ||
+            t.Contains("pivot") ||
+            t.Contains("performance") ||
+            t.Contains("profit") ||
+            t.Contains("revenue") ||
+            t.Contains("sales") ||
+            t.Contains("cost") ||
+            t.Contains("margin");
+
+        // Chart intent paired with spreadsheet context
+        var wantsChart =
+            t.Contains("chart") || t.Contains("graph") || t.Contains("plot") || t.Contains("visual");
+
+        // If they clearly want analytics and it's likely spreadsheet-related => ExcelAnalyticsAgent
+        if (mentionsSpreadsheet && (analytics || wantsChart))
+            return true;
+
+        // Even without explicit spreadsheet keyword, if they say "analyze the attached file/spreadsheet"
+        if ((t.Contains("analyze") || t.Contains("insights") || t.Contains("dashboard")) &&
+            (t.Contains("attached") || t.Contains("attachment") || t.Contains("file")))
+            return true;
+
+        return false;
     }
 }

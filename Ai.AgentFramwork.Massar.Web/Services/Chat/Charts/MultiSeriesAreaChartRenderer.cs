@@ -14,8 +14,8 @@ public sealed class MultiSeriesAreaChartRenderer
         IReadOnlyList<string> xLabels,
         IReadOnlyList<string> seriesNames,
         IReadOnlyList<IReadOnlyList<double>> seriesValues,
-        int width = 1300,
-        int height = 750)
+        int width = 650,
+        int height = 375)
     {
         ChartRenderHelpers.ValidateMultiSeries(xLabels, seriesNames, seriesValues);
 

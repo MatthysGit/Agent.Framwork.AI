@@ -5,6 +5,7 @@ using System.ComponentModel;
 
 namespace Ai.AgentFramwork.Massar.Web.Agents;
 
+
 public sealed class AgentCallerTool
 {
     private readonly IAgentRegistry _registry;
@@ -34,8 +35,17 @@ public sealed class AgentCallerTool
         [Description("The user request for that agent.")] string input,
         CancellationToken cancellationToken = default)
     {
+        // Agent name must always be valid
         ArgumentException.ThrowIfNullOrWhiteSpace(agentName);
-        ArgumentException.ThrowIfNullOrWhiteSpace(input);
+
+        // ⚠️ Do NOT throw on empty input:
+        // Some routes (e.g., attachment-driven Excel analytics) may rely on context/attachments
+        // and your orchestrator/router may pass an empty string.
+        // We'll normalize to a safe default instead.
+        if (string.IsNullOrWhiteSpace(input))
+            input = "Use the available conversation context and any uploaded attachments to complete the requested task.";
+
+        input = input.Trim();
 
         _onRoute?.Invoke(agentName);
 
@@ -48,7 +58,7 @@ public sealed class AgentCallerTool
             new(ChatRole.User, new[] { new TextContent(input) })
         };
 
-        // ✅ Correct Agent Framework API: RunAsync returns AgentResponse :contentReference[oaicite:1]{index=1}
+        // ✅ Correct Agent Framework API: RunAsync returns AgentResponse
         var response = await agent.RunAsync(
             messages,
             session: null,

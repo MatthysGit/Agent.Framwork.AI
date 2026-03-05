@@ -2,6 +2,7 @@
 using Ai.AgentFramwork.Massar.Web.Services.Chat.charts;
 using Microsoft.EntityFrameworkCore;
 using System.ComponentModel;
+using System.Text;
 
 namespace Ai.AgentFramwork.Massar.Web.Services.Chat;
 
@@ -158,6 +159,14 @@ public sealed class ChatTools
             : System.Text.Encoding.UTF8.GetBytes(content ?? string.Empty);
 
         var att = await _attachmentStore.SaveAssistantFileAsync(fileName, mimeType, bytes);
+        
+        StringBuilder sb = new StringBuilder();
+        sb.AppendLine("### Visual Aids");
+        sb.AppendLine();
+        sb.AppendLine("**1. Trend Chart**");
+        sb.AppendLine($"![Sales Trend](/api/chat/attachments/{att.AttachmentId})");
+        sb.AppendLine();
+        
         _session.TrackAssistantAttachment(att);
 
         return att.StorageUrl;

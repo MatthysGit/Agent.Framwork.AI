@@ -12,8 +12,8 @@ public sealed class GaugeChartRenderer
         double value,
         double min = 0,
         double max = 100,
-        int width = 900,
-        int height = 500)
+        int width = 450,
+        int height = 250)
     {
         if (max <= min) max = min + 1;
 

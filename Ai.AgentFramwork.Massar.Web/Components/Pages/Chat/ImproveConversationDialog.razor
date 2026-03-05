@@ -138,8 +138,6 @@
                     {
                         <MudAlert Severity="Severity.Success" Dense="true">@_emailSendSuccess</MudAlert>
                     }
-
-
                 </MudStack>
             }
         </MudStack>
@@ -147,14 +145,10 @@
 
     <DialogActions>
         <MudStack Direction="Row" Spacing="1" AlignItems="AlignItems.Center" Class="mail-actions">
-
-
-
             <MudSpacer />
         </MudStack>
 
         <MudButton Variant="Variant.Text" OnClick="Close" Disabled="@(_busy || _sendingEmail)">Close</MudButton>
-        
 
         <MudButton Variant="Variant.Outlined"
                    Size="Size.Small"
@@ -162,7 +156,7 @@
                    OnClick="SaveDraftAsync">
             Save as draft mail
         </MudButton>
-        
+
         <MudButton Color="Color.Primary"
                    Variant="Variant.Filled"
                    Disabled="@(!_canSendEmail || _sendingEmail)"
@@ -177,10 +171,6 @@
                 <span>Send Email</span>
             }
         </MudButton>
-
-        @*       <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ReloadAsync" Disabled="@(_busy || _sendingEmail)">
-            Refresh
-        </MudButton> *@
     </DialogActions>
 </MudDialog>
 
@@ -290,7 +280,7 @@
     // Supports both legacy <!--TOOL:...--> and markdown comment [//]: # (TOOL:...).
     private static readonly Regex ToolMarkerRegex =
         new(@"(?:<!--\s*TOOL:(?<type>[^:]+):(?<b64>[^>]+?)\s*-->)|(?:\[\s*\/\/\s*\]\s*:\s*#\s*\(\s*TOOL:(?<type2>[^:]+):(?<b642>[^)]+?)\s*\)\s*)",
-            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
     private bool _busy = true;
     private bool _loadedOnce;
@@ -381,12 +371,6 @@
         }
     }
 
-    private async Task ReloadAsync()
-    {
-        await LoadAsync();
-        await InvokeAsync(StateHasChanged);
-    }
-
     private async Task LoadAsync()
     {
         _busy = true;
@@ -431,7 +415,24 @@
 
             _emailMarkdown = ApplySignature(md, _signatureName);
 
-            var sqlTables = ExtractSqlResultMarkdownFromMessages(ChatService.Messages);
+            // ✅ Always include the latest assistant answer as an appendix (Excel agent output lives here).
+            // This fixes cases where the Improve service returns a generic fallback, or when ChatMessage.Text is empty.
+            var latestAssistantMd = ExtractLatestAssistantMarkdown(ChatService.Messages);
+            if (!string.IsNullOrWhiteSpace(latestAssistantMd))
+            {
+                // Avoid duplicating if already present (cheap check)
+                if (!_emailMarkdown.Contains(latestAssistantMd, StringComparison.Ordinal))
+                {
+                    _emailMarkdown = _emailMarkdown.TrimEnd()
+                                    + "\n\n---\n\n### Latest analysis\n\n"
+                                    + latestAssistantMd.Trim()
+                                    + "\n";
+                }
+            }
+
+            // SQL tool appendices
+            var sqlTablesAll = ExtractSqlResultMarkdownFromMessages(ChatService.Messages);
+            var sqlTables = FilterSqlTablesAgainstLatest(sqlTablesAll, latestAssistantMd);
             var appendix = BuildSqlResultsAppendixMarkdown(sqlTables);
 
             if (!string.IsNullOrWhiteSpace(appendix) &&
@@ -441,9 +442,21 @@
                 _emailMarkdown = _emailMarkdown.TrimEnd() + "\n\n" + appendix.Trim() + "\n";
             }
 
+            // Chart tool appendices
             var chartUrls = ExtractChartUrlsFromMessages(ChatService.Messages);
-            var chartAppendix = BuildChartsAppendixMarkdown(chartUrls);
 
+            // Avoid duplicating charts already present in the "latest analysis" markdown/html (e.g. Excel/SQL agent output
+            // that already includes image links).
+            var alreadyIncludedImgUrls = ExtractImageUrlsFromMarkdownOrHtml(_emailMarkdown);
+
+            if (alreadyIncludedImgUrls.Count > 0)
+            {
+                chartUrls = chartUrls
+                    .Where(u => !alreadyIncludedImgUrls.Contains(u))
+                    .ToList();
+            }
+
+            var chartAppendix = BuildChartsAppendixMarkdown(chartUrls);
             if (!string.IsNullOrWhiteSpace(chartAppendix) &&
                 !_emailMarkdown.Contains("### Charts", StringComparison.OrdinalIgnoreCase) &&
                 !_emailMarkdown.Contains("## Charts", StringComparison.OrdinalIgnoreCase))
@@ -464,9 +477,31 @@
     }
 
     // -------------------------
+    // ChatMessage text extraction (IMPORTANT)
+    // -------------------------
+    private static string GetMessageText(Microsoft.Extensions.AI.ChatMessage m)
+        => m is null ? "" : string.Concat(m.Contents.OfType<TextContent>().Select(t => t.Text));
+
+    private static string ExtractLatestAssistantMarkdown(IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages)
+    {
+        // Find last assistant message with any text content (not tool payload).
+        var last = messages
+            .Reverse()
+            .FirstOrDefault(m => m is not null && m.Role == ChatRole.Assistant && !string.IsNullOrWhiteSpace(GetMessageText(m)));
+
+        if (last is null) return "";
+
+        var text = GetMessageText(last);
+        if (string.IsNullOrWhiteSpace(text)) return "";
+
+        // Strip hidden tool blobs but keep normal markdown/images.
+        text = ToolMarkerRegex.Replace(text, "").Trim();
+        return text;
+    }
+
+    // -------------------------
     // Hidden tool payload extractors
     // -------------------------
-
     private static bool TryReadToolMatch(Match match, out string type, out string b64)
     {
         type = "";
@@ -495,7 +530,7 @@
 
         foreach (var m in messages)
         {
-            var text = m?.Text;
+            var text = GetMessageText(m);
             if (string.IsNullOrWhiteSpace(text)) continue;
 
             foreach (Match match in ToolMarkerRegex.Matches(text))
@@ -540,7 +575,7 @@
 
         foreach (var m in messages)
         {
-            var text = m?.Text;
+            var text = GetMessageText(m);
             if (string.IsNullOrWhiteSpace(text)) continue;
 
             foreach (Match match in ToolMarkerRegex.Matches(text))
@@ -579,6 +614,13 @@
     private static string BuildSqlResultsAppendixMarkdown(IEnumerable<string> tables)
     {
         var list = tables?.Where(t => !string.IsNullOrWhiteSpace(t)).ToList() ?? new List<string>();
+
+        // Deduplicate identical tables (same markdown) to avoid repeated results
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        list = list
+            .Select(NormalizeMarkdownTable)
+            .Where(t => !string.IsNullOrWhiteSpace(t) && seen.Add(t))
+            .ToList();
         if (list.Count == 0) return "";
 
         var sb = new StringBuilder();
@@ -621,12 +663,67 @@
         return sb.ToString();
     }
 
+
+    private static List<string> FilterSqlTablesAgainstLatest(IEnumerable<string> tables, string? latestAssistantMarkdown)
+    {
+        var list = tables?.Where(t => !string.IsNullOrWhiteSpace(t)).ToList() ?? new List<string>();
+        if (list.Count == 0) return list;
+
+        if (string.IsNullOrWhiteSpace(latestAssistantMarkdown))
+            return list;
+
+        var latestNorm = NormalizeMarkdownTable(latestAssistantMarkdown);
+
+        // If the latest assistant message already contains the same markdown table(s),
+        // don't re-append them under "Results" to avoid duplicates.
+        var filtered = new List<string>();
+        foreach (var t in list)
+        {
+            var tn = NormalizeMarkdownTable(t);
+
+            if (!string.IsNullOrWhiteSpace(latestNorm) &&
+                (latestNorm.Contains(tn, StringComparison.OrdinalIgnoreCase) ||
+                 tn.Contains(latestNorm, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            filtered.Add(t);
+        }
+
+        return filtered;
+    }
+
     private static string NormalizeMarkdownTable(string md)
     {
         if (string.IsNullOrWhiteSpace(md)) return md;
 
         var t = md.Trim().Replace("\\r\\n", "\n").Replace("\\n", "\n").Replace("\r\n", "\n");
         return t;
+    }
+
+    private static HashSet<string> ExtractImageUrlsFromMarkdownOrHtml(string? markdownOrHtml)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(markdownOrHtml)) return set;
+
+        var s = markdownOrHtml;
+
+        // Markdown images: ![alt](url)
+        foreach (Match m in Regex.Matches(s, @"!\[[^\]]*\]\((?<url>[^)\s]+)\)", RegexOptions.IgnoreCase))
+        {
+            var url = m.Groups["url"].Value?.Trim();
+            if (!string.IsNullOrWhiteSpace(url)) set.Add(url);
+        }
+
+        // HTML images: <img src="url">
+        foreach (Match m in Regex.Matches(s, @"<img\b[^>]*?\bsrc\s*=\s*""(?<url>[^""]+)""[^>]*>", RegexOptions.IgnoreCase))
+        {
+            var url = m.Groups["url"].Value?.Trim();
+            if (!string.IsNullOrWhiteSpace(url)) set.Add(url);
+        }
+
+        return set;
     }
 
     private static string? FirstString(object obj, params string[] candidates)
@@ -643,7 +740,7 @@
     }
 
     // -------------------------
-    // Email Send/Draft (FIXES)
+    // Email Send/Draft
     // -------------------------
 
     private async Task SaveDraftAsync()
@@ -818,7 +915,6 @@
             "border:1px solid #d0d0d0;padding:3px 6px;font-size:12px;line-height:1.2;" +
             "text-align:left;mso-line-height-rule:exactly;";
 
-        // TABLE: ensure style + legacy attrs that help some Outlook variants.
         html = Regex.Replace(html, "<table([^>]*)>", m =>
         {
             var tag = m.Value;
@@ -844,7 +940,6 @@
             if (!Regex.IsMatch(tag, "\\bcellspacing\\s*=", RegexOptions.IgnoreCase))
                 tag = tag.Replace("<table", "<table cellspacing=\"0\"", StringComparison.OrdinalIgnoreCase);
 
-            // Keep the border controlled by CSS, but these attrs increase reliability in Outlook.
             if (!Regex.IsMatch(tag, "\\bborder\\s*=", RegexOptions.IgnoreCase))
                 tag = tag.Replace("<table", "<table border=\"1\"", StringComparison.OrdinalIgnoreCase);
             if (!Regex.IsMatch(tag, "\\bbordercolor\\s*=", RegexOptions.IgnoreCase))
@@ -853,7 +948,6 @@
             return tag;
         }, RegexOptions.IgnoreCase);
 
-        // TH: add style if missing; if present but missing border, append border.
         html = Regex.Replace(html, "<th([^>]*)>", m =>
         {
             var tag = m.Value;
@@ -869,7 +963,6 @@
                     return $"style=\"{existing.TrimEnd(';')};border:1px solid #d0d0d0;\"";
                 }, RegexOptions.IgnoreCase);
 
-                // ensure bgcolor hint exists (optional)
                 if (!Regex.IsMatch(tag, "\\bbgcolor\\s*=", RegexOptions.IgnoreCase))
                     tag = tag.Insert(tag.Length - 1, " bgcolor=\"#f5f5f5\"");
 
@@ -879,7 +972,6 @@
             return tag.Insert(tag.Length - 1, $" style=\"{thStyle}\" bgcolor=\"#f5f5f5\"");
         }, RegexOptions.IgnoreCase);
 
-        // TD: add style if missing; if present but missing border, append border.
         html = Regex.Replace(html, "<td([^>]*)>", m =>
         {
             var tag = m.Value;
@@ -917,8 +1009,6 @@
             var src = m.Groups["src"].Value?.Trim();
             if (string.IsNullOrWhiteSpace(src)) continue;
 
-            // Accept absolute (http/https) and relative (/, ./, no scheme) URLs.
-            // We'll normalize to absolute for downloading, but we MUST remember the original src for replacement.
             if (src.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ||
                 src.StartsWith("cid:", StringComparison.OrdinalIgnoreCase))
                 continue;
@@ -934,7 +1024,6 @@
             {
                 try
                 {
-                    // Make relative URLs absolute using the app base URI.
                     fetchUrl = new Uri(new Uri(Nav.BaseUri), src).ToString();
                 }
                 catch
@@ -943,7 +1032,6 @@
                 }
             }
 
-            // store as "original|fetch"
             urls.Add(src + "|FETCH|" + fetchUrl);
         }
 
@@ -953,8 +1041,6 @@
         using var http = HttpClientFactory.CreateClient();
         http.Timeout = TimeSpan.FromSeconds(12);
 
-        // ✅ Forward current request cookies so authenticated attachment endpoints can be downloaded.
-        // Outlook cannot access app-authenticated URLs, so we must embed images as CID.
         var cookieHeader = HttpContextAccessor.HttpContext?.Request?.Headers["Cookie"].ToString();
         if (!string.IsNullOrWhiteSpace(cookieHeader))
         {
@@ -1012,7 +1098,7 @@
             }
             catch
             {
-                // ignore; keep remote src
+                // ignore
             }
         }
 
@@ -1034,7 +1120,6 @@
     // -------------------------
     // Minimal fallback + display name
     // -------------------------
-
     private static string BuildFallbackEmailMarkdown(object r, string? signatureName)
     {
         var sb = new StringBuilder();

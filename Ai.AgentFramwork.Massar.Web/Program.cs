@@ -35,7 +35,8 @@ using Ai.AgentFramwork.Massar.Web.Services.Email;
 using Ai.AgentFramwork.Massar.Web.DTO; // ✅ SendEmailRequest DTO lives here now
 using static Ai.AgentFramwork.Massar.Web.DTO.LoginRequestDTO;
 using Ai.AgentFramwork.Massar.Web.DTO;
-    
+using Ai.AgentFramwork.Massar.Web.Services.ExcelServices;
+
 var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
@@ -172,12 +173,29 @@ builder.Services.AddScoped<DocumentSearchTool>();
 builder.Services.AddScoped<DocumentEditTool>();
 
 builder.Services.AddScoped<IImproveConversationService, ImproveConversationService>();
+builder.Services.AddScoped<ExcelVisualAidsBuilder>();
 
 builder.Services.AddSingleton<IGraphOptionsProvider, DbGraphOptionsProvider>();
 builder.Services.AddHttpClient<IOffice365EmailService, Office365EmailService>();
 
 builder.Services.AddKeyedSingleton("ingestion_directory",
     new DirectoryInfo(Path.Combine(builder.Environment.WebRootPath, "Data")));
+
+
+// Excel analytics pipeline
+builder.Services.AddScoped<ISpreadsheetTableExtractor, SpreadsheetTableExtractor>();
+
+builder.Services.AddScoped<IChatAttachmentBlobReader,ChatAttachmentBlobReader>();
+
+builder.Services.AddScoped<IUploadedExcelReader,UploadedExcelReader>();
+
+// Tool + wrapper
+builder.Services.AddScoped<ExcelAnalyticsTool>();
+builder.Services.AddScoped<ExcelAnalyticsToolWrapper>();
+
+// Chart renderers (you already have these files)
+builder.Services.AddScoped<LineChartRenderer>();
+builder.Services.AddScoped<BarChartRenderer>();
 
 var app = builder.Build();
 
