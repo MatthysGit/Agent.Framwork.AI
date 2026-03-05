@@ -18,11 +18,13 @@ public sealed class RouterAgent
         _historyProvider = historyProvider;
     }
 
+    
+
     public sealed record RouteResult(
-        string Mode,      // "agent" | "chart"
-        string Agent,     // agent name
-        string Reason,
-        string? ChartType = null);
+            string Mode,      // "agent" | "chart"
+            string Agent,     // agent name
+            string Reason,
+            string? ChartType = null);
 
     public async Task<RouteResult> RouteAsync(string userMessage, CancellationToken ct = default)
     {
@@ -69,13 +71,14 @@ Return ONLY strict JSON.
 Schema (return exactly this shape):
 {
   \"mode\": \"agent\" | \"chart\",
-  \"agent\": \"{{{ChatAgentFactory.SqlAgentName}}}\" 
+  \"agent\": \"{{{ChatAgentFactory.DataExplorerAgentName}}}\" 
+        | \"{{{ChatAgentFactory.SqlAgentName}}}\" 
         | \"{{{ChatAgentFactory.DocumentSearchAgentName}}}\" 
         | \"{{{ChatAgentFactory.DocumentEditAgentName}}}\"
         | \"{{{ChatAgentFactory.ExcelAnalyticsAgentName}}}\"
         | \"{{{ChatAgentFactory.LlmChatAgentName}}}\",
   \"reason\": \"<short reason>\",
-  \"chartType\": \"bar\"|\"pie\"|\"line\"|\"area\"|\"donut\"|\"gauge\"|\"progress\"|\"multicolumn\"|null
+  \"chartType\": \"column\"|\"bar\"|\"pie\"|\"line\"|\"area\"|\"donut\"|\"gauge\"|\"progress\"|\"multicolumn\"|null
 }
 
 ABSOLUTE DOCUMENT ROUTING RULES (MUST FOLLOW):
@@ -118,14 +121,14 @@ CHART RULE:
   mode=\"chart\", agent=\"{{{ChatAgentFactory.SqlAgentName}}}\", chartType best fit.
 
 SQL RULE:
-- If clearly SQL/database (not chart) => agent \"{{{ChatAgentFactory.SqlAgentName}}}\".
+- If clearly SQL/database (not chart) => agent "{{{ChatAgentFactory.DataExplorerAgentName}}}".
 
-SQL INTENT KEYWORDS (ROUTE TO SQL AGENT):
+SQL / DATA EXPLORATION INTENT KEYWORDS (ROUTE TO DataExplorer):
 - If the user asks for: count / how many / number of / total / sum / avg / average / min / max
 - Or asks for: breakdown / grouped by / per / by <dimension>
 - Or mentions database/query/select/sql/table/view
 - Or asks about business metrics like: employees, headcount, sales, revenue, orders, invoices, territories
-=> choose agent \"{{{ChatAgentFactory.SqlAgentName}}}\" (mode=\"agent\" unless chart requested).
+=> choose agent "{{{ChatAgentFactory.DataExplorerAgentName}}}" (mode="agent" unless chart requested).
 
 FALLBACK:
 - Otherwise => agent \"{{{ChatAgentFactory.LlmChatAgentName}}}\".
