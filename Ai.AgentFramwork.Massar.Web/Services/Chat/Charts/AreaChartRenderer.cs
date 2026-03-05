@@ -11,8 +11,8 @@ public sealed class AreaChartRenderer
         string yAxisLabel,
         IReadOnlyList<string> xLabels,
         IReadOnlyList<double> yValues,
-        int width = 1200,
-        int height = 700)
+        int width = 600,
+        int height = 350)
     {
         if (xLabels.Count != yValues.Count) throw new ArgumentException("xLabels and yValues must have the same length.");
         if (xLabels.Count == 0) throw new ArgumentException("No data to render.");

@@ -1,107 +1,1100 @@
-﻿@using Ai.AgentFramwork.Massar.Web.DBModels
+﻿@* File: Components/Pages/Chat/ImproveConversationDialog.razor *@
+@using MudBlazor
+@using System.Reflection
+@using System.Text
+@using System.Text.Json
+@using System.Text.RegularExpressions
 @using Microsoft.EntityFrameworkCore
+@using Ai.AgentFramwork.Massar.Web.Services.Chat
+@using Ai.AgentFramwork.Massar.Web.DTO
+@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Ai.AgentFramwork.Massar.Web.Services.Email
+@using Markdig
+
+@inject Ai.AgentFramwork.Massar.Web.Services.Chat.ChatService ChatService
+@inject Ai.AgentFramwork.Massar.Web.Services.Chat.IImproveConversationService ImproveService
+@inject Ai.AgentFramwork.Massar.Web.Services.Email.IOffice365EmailService EmailService
 @inject IDbContextFactory<AppDbContext> DbFactory
-@inject ISnackbar Snackbar
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager Nav
+@inject IHttpContextAccessor HttpContextAccessor
 
-<MudDialog>
+<MudDialog Class="pa-2" Style="min-width:900px; min-height:560px;">
     <DialogContent>
-        <MudForm @ref="_form">
-            <MudSelect T="string" Label="Table (Referenced / Primary)" @bind-Value="Model.table_name" Required="true" Disabled="true">
-                @foreach (var t in AllTables.OrderBy(x => x.Name))
-                {
-                    <MudSelectItem Value="@t.Name">@t.Name</MudSelectItem>
-                }
-            </MudSelect>
-            <MudSelect T="string"
-                       Label="Referencing Table"
-                       Value="Model.referencing_table_name"
-                       ValueChanged="async (string v) => await OnReferencingTableChanged(v)"
-                       Required="true">
-                @foreach (var t in AllTables.OrderBy(x => x.Name))
-                {
-                    <MudSelectItem Value="@t.Name">@t.Name</MudSelectItem>
-                }
-            </MudSelect>
+        <MudStack Spacing="2">
+            @if (_busy)
+            {
+                <MudProgressLinear Indeterminate="true" />
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Generating results...</MudText>
+            }
+            else if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error" Dense="true">@_error</MudAlert>
+            }
+            else if (_result is null)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true">No result returned.</MudAlert>
+            }
+            else
+            {
+                <MudStack Spacing="2">
+                    <MudPaper Class="mail-header" Elevation="0" Outlined="true">
+                        <MudStack Spacing="1">
+                            <MudTextField T="string"
+                                          @bind-Value="_emailTo"
+                                          Label="To"
+                                          Style="font-size:small"
+                                          Variant="Variant.Outlined"
+                                          Placeholder="someone@company.com"
+                                          Disabled="@_sendingEmail"
+                                          Immediate="true"
+                                          Validation="ValidateEmails"
+                                          Dense="true"
+                                          Margin="Margin.Dense"
+                                          Class="email-field thin-field" />
 
-            <MudSelect T="string?" Label="Referencing Column" @bind-Value="Model.referencing_column_name">
-                @foreach (var c in _referencingColumns)
-                {
-                    <MudSelectItem Value="@c">@c</MudSelectItem>
-                }
-            </MudSelect>
-        </MudForm>
+                            <MudTextField T="string"
+                                          @bind-Value="_emailCc"
+                                          Label="Cc"
+                                          Style="font-size:small"
+                                          Variant="Variant.Outlined"
+                                          Placeholder="someone@company.com"
+                                          Disabled="@_sendingEmail"
+                                          Immediate="true"
+                                          Validation="ValidateOptionalEmails"
+                                          Dense="true"
+                                          Margin="Margin.Dense"
+                                          Class="email-field thin-field" />
+
+                            <MudTextField T="string"
+                                          @bind-Value="_emailSubject"
+                                          Label="Subject"
+                                          Style="font-size:small"
+                                          Variant="Variant.Outlined"
+                                          Disabled="@_sendingEmail"
+                                          Dense="true"
+                                          Margin="Margin.Dense"
+                                          Class="thin-field" />
+                        </MudStack>
+                    </MudPaper>
+
+                    <MudPaper Class="mail-preview" Elevation="0" Outlined="true">
+                        @if (!string.IsNullOrWhiteSpace(_emailMarkdown))
+                        {
+                            <div class="email-preview">
+                                @((MarkupString)_emailPreviewHtml)
+                            </div>
+                        }
+                        else
+                        {
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">No email body.</MudText>
+                        }
+                    </MudPaper>
+
+                    <MudExpansionPanels Elevation="0" Outlined="true">
+                        <MudExpansionPanel Text="Edit email text (Markdown)">
+                            <MudTextField @bind-Value="_emailMarkdown"
+                                          Label="Body (Markdown)"
+                                          Variant="Variant.Outlined"
+                                          Lines="10"
+                                          AutoGrow="true"
+                                          Disabled="@_sendingEmail" />
+                        </MudExpansionPanel>
+                    </MudExpansionPanels>
+
+                    <MudStack Direction="Row" Style="margin-left:20px" Spacing="1" AlignItems="AlignItems.Start" Class="preview-header">
+                        <MudSpacer />
+                        <MudButton Variant="Variant.Outlined"
+                                   Size="Size.Small"
+                                   Disabled="@_sendingEmail"
+                                   OnClick="RefreshPreview">
+                            Refresh preview
+                        </MudButton>
+                    </MudStack>
+
+                    @if (!string.IsNullOrWhiteSpace(_draftSaveError))
+                    {
+                        <MudAlert Severity="Severity.Error" Dense="true">@_draftSaveError</MudAlert>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(_draftSaveSuccess))
+                    {
+                        <MudAlert Severity="Severity.Success" Dense="true">
+                            @_draftSaveSuccess
+                            @if (!string.IsNullOrWhiteSpace(_draftWebLink))
+                            {
+                                <span> • </span>
+                                <MudLink Href="@_draftWebLink" Target="_blank">Open draft</MudLink>
+                            }
+                        </MudAlert>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(_emailSendError))
+                    {
+                        <MudAlert Severity="Severity.Error" Dense="true">@_emailSendError</MudAlert>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(_emailSendSuccess))
+                    {
+                        <MudAlert Severity="Severity.Success" Dense="true">@_emailSendSuccess</MudAlert>
+                    }
+                </MudStack>
+            }
+        </MudStack>
     </DialogContent>
 
     <DialogActions>
-        <MudButton OnClick="Cancel">Cancel</MudButton>
-        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Save">Save</MudButton>
+        <MudStack Direction="Row" Spacing="1" AlignItems="AlignItems.Center" Class="mail-actions">
+            <MudSpacer />
+        </MudStack>
+
+        <MudButton Variant="Variant.Text" OnClick="Close" Disabled="@(_busy || _sendingEmail)">Close</MudButton>
+
+        <MudButton Variant="Variant.Outlined"
+                   Size="Size.Small"
+                   Disabled="@(!_canSendEmail || _sendingEmail)"
+                   OnClick="SaveDraftAsync">
+            Save as draft mail
+        </MudButton>
+
+        <MudButton Color="Color.Primary"
+                   Variant="Variant.Filled"
+                   Disabled="@(!_canSendEmail || _sendingEmail)"
+                   OnClick="SendEmailAsync">
+            @if (_sendingEmail)
+            {
+                <MudProgressCircular Indeterminate="true" Size="Size.Small" Class="mr-2" />
+                <span>Sending</span>
+            }
+            else
+            {
+                <span>Send Email</span>
+            }
+        </MudButton>
     </DialogActions>
 </MudDialog>
 
+<style>
+    .mail-header {
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: rgba(0,0,0,0.02);
+    }
+
+    .thin-field .mud-input-root {
+        min-height: 24px;
+    }
+
+    .thin-field .mud-input-slot {
+        padding-top: 6px !important;
+        padding-bottom: 6px !important;
+        padding-left: 14px !important;
+        font-size: small;
+    }
+
+    .thin-field input, .thin-field textarea {
+        padding-left: 2px !important;
+    }
+
+    .thin-field .mud-input-outlined-border {
+        border-radius: 10px;
+    }
+
+    .preview-header {
+        margin-top: 2px;
+    }
+
+    .mail-preview {
+        padding: 12px;
+        border-radius: 10px;
+        min-height: 360px;
+        max-height: 420px;
+        overflow: auto;
+        background: #fff;
+    }
+
+    .email-preview {
+        font-family: Arial, sans-serif;
+        font-size: 14px;
+        line-height: 1.45;
+        color: #111;
+    }
+
+        .email-preview * {
+            letter-spacing: normal !important;
+            text-transform: none !important;
+        }
+
+        .email-preview p {
+            margin: 0 0 12px 0;
+        }
+
+        .email-preview table {
+            border-collapse: collapse;
+            margin-top: 8px;
+            margin-bottom: 16px;
+        }
+
+        .email-preview th, .email-preview td {
+            border: 1px solid #d0d0d0;
+            padding: 4px 8px;
+            font-size: 12px;
+            text-align: left;
+            line-height: 1.2;
+        }
+
+        .email-preview th {
+            background: #f5f5f5;
+            font-weight: 600;
+        }
+
+        .email-preview ul, .email-preview ol {
+            margin: 0 0 12px 24px;
+            padding: 0;
+            list-style-position: outside;
+        }
+
+        .email-preview ul {
+            list-style-type: disc;
+        }
+
+        .email-preview ol {
+            list-style-type: decimal;
+        }
+
+        .email-preview li {
+            margin: 4px 0;
+        }
+
+        .email-preview hr {
+            border: 0;
+            border-top: 1px solid #ddd;
+            margin: 16px 0;
+        }
+</style>
+
 @code {
     [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Guid ConversationId { get; set; }
 
-    [Parameter] public TableReferencing Model { get; set; } = default!;
-    [Parameter] public List<TableDefinition> AllTables { get; set; } = new();
+    // Supports both legacy <!--TOOL:...--> and markdown comment [//]: # (TOOL:...).
+    private static readonly Regex ToolMarkerRegex =
+        new(@"(?:<!--\s*TOOL:(?<type>[^:]+):(?<b64>[^>]+?)\s*-->)|(?:\[\s*\/\/\s*\]\s*:\s*#\s*\(\s*TOOL:(?<type2>[^:]+):(?<b642>[^)]+?)\s*\)\s*)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-    private MudForm? _form;
-    private List<string> _referencingColumns = new();
+    private bool _busy = true;
+    private bool _loadedOnce;
+    private string? _error;
 
-    protected override async Task OnInitializedAsync()
+    private string _emailPreviewHtml = "";
+    private object? _result;
+
+    private string _emailTo = "";
+    private string _emailCc = "";
+    private string _emailSubject = "";
+    private string _emailMarkdown = "";
+
+    private string? _signatureName;
+
+    private bool _sendingEmail;
+    private string? _emailSendError;
+    private string? _emailSendSuccess;
+
+    private string? _draftSaveError;
+    private string? _draftSaveSuccess;
+    private string? _draftWebLink;
+
+    private bool _canSendEmail =>
+        SplitEmails(_emailTo).Length > 0 &&
+        !string.IsNullOrWhiteSpace(_emailSubject) &&
+        !string.IsNullOrWhiteSpace(_emailMarkdown);
+
+    protected override void OnInitialized()
     {
-        await LoadReferencingColumns();
+        _busy = true;
+        _error = null;
+        _result = null;
     }
 
-    private void Cancel()
+    private string? ValidateEmails(string value)
     {
-        MudDialog.Cancel();
+        if (string.IsNullOrWhiteSpace(value))
+            return "At least one email is required.";
+
+        var emails = value
+            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(e => e.Trim())
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .ToList();
+
+        foreach (var email in emails)
+        {
+            try { _ = new System.Net.Mail.MailAddress(email); }
+            catch { return $"Invalid email: {email}"; }
+        }
+
+        return null;
     }
 
-    private async Task OnReferencingTableChanged(string value)
+    private string? ValidateOptionalEmails(string? value)
     {
-        Model.referencing_table_name = value;
-        Model.referencing_column_name = null;
-        await LoadReferencingColumns();
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        var emails = value
+            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(e => e.Trim())
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .ToList();
+
+        foreach (var email in emails)
+        {
+            try { _ = new System.Net.Mail.MailAddress(email); }
+            catch { return $"Invalid email: {email}"; }
+        }
+
+        return null;
     }
 
-
-    private async Task LoadReferencingColumns()
+    private void RefreshPreview()
     {
-        _referencingColumns.Clear();
-        if (string.IsNullOrWhiteSpace(Model.referencing_table_name))
-            return;
-
-        await using var db = await DbFactory.CreateDbContextAsync();
-        _referencingColumns = await db.TableFieldDefinitions
-            .Where(f => f.table_name == Model.referencing_table_name)
-            .OrderBy(f => f.column_name)
-            .Select(f => f.column_name)
-            .ToListAsync();
+        _emailPreviewHtml = RenderEmailBodyHtml(_emailMarkdown ?? "");
     }
 
-    private async Task Save()
+    protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (_form is null) return;
-        await _form.Validate();
-        if (!_form.IsValid) return;
+        if (firstRender && !_loadedOnce)
+        {
+            _loadedOnce = true;
+            await LoadAsync();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
 
+    private async Task ReloadAsync()
+    {
+        await LoadAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadAsync()
+    {
+        _busy = true;
+        _error = null;
+        _result = null;
+
+        _emailSendError = null;
+        _emailSendSuccess = null;
+        _draftSaveError = null;
+        _draftSaveSuccess = null;
+        _draftWebLink = null;
+
+        try
+        {
+            var userId = await ChatService.GetMyUserIdAsync();
+            if (string.IsNullOrWhiteSpace(userId))
+            {
+                _error = "User not authenticated.";
+                return;
+            }
+
+            if (ConversationId == Guid.Empty)
+            {
+                _error = "ConversationId is empty (Guid.Empty). The header must pass a real conversation id.";
+                return;
+            }
+
+            _signatureName = await GetUserDisplayNameAsync(userId);
+
+            ImproveConversationResultDto dto = await ImproveService.ImproveAsync(
+                userId, ConversationId, options: null, CancellationToken.None);
+
+            _result = dto;
+
+            _emailSubject = FirstString(dto,
+                "EmailSubject", "Subject", "DraftSubject", "SuggestedEmailSubject", "MailSubject")
+                ?? "Conversation Summary";
+
+            var md = FirstString(dto,
+                "EmailBodyMarkdown", "BodyMarkdown", "DraftBodyMarkdown", "SuggestedEmailBodyMarkdown", "MailBodyMarkdown")
+                ?? BuildFallbackEmailMarkdown(dto, _signatureName);
+
+            _emailMarkdown = ApplySignature(md, _signatureName);
+
+            // -------------------------
+            // ✅ FIX: De-dupe SQL tables already present in the markdown (prevents duplicated Results blocks)
+            // -------------------------
+            var sqlTables = ExtractSqlResultMarkdownFromMessages(ChatService.Messages);
+            var newTables = FilterOutExistingTables(_emailMarkdown, sqlTables);
+            var appendix = BuildSqlResultsAppendixMarkdown(newTables);
+
+            if (!string.IsNullOrWhiteSpace(appendix) &&
+                !_emailMarkdown.Contains("### Results", StringComparison.OrdinalIgnoreCase) &&
+                !_emailMarkdown.Contains("## Results", StringComparison.OrdinalIgnoreCase))
+            {
+                _emailMarkdown = _emailMarkdown.TrimEnd() + "\n\n" + appendix.Trim() + "\n";
+            }
+
+            // -------------------------
+            // ✅ FIX: De-dupe charts already present in markdown
+            // -------------------------
+            var chartUrls = ExtractChartUrlsFromMessages(ChatService.Messages);
+            var newChartUrls = FilterOutExistingChartUrls(_emailMarkdown, chartUrls);
+            var chartAppendix = BuildChartsAppendixMarkdown(newChartUrls);
+
+            if (!string.IsNullOrWhiteSpace(chartAppendix) &&
+                !_emailMarkdown.Contains("### Charts", StringComparison.OrdinalIgnoreCase) &&
+                !_emailMarkdown.Contains("## Charts", StringComparison.OrdinalIgnoreCase))
+            {
+                _emailMarkdown = _emailMarkdown.TrimEnd() + "\n\n" + chartAppendix.Trim() + "\n";
+            }
+
+            RefreshPreview();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.ToString();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    // -------------------------
+    // Hidden tool payload extractors
+    // -------------------------
+
+    private static bool TryReadToolMatch(Match match, out string type, out string b64)
+    {
+        type = "";
+        b64 = "";
+
+        if (match.Groups["type"].Success && match.Groups["b64"].Success)
+        {
+            type = match.Groups["type"].Value;
+            b64 = match.Groups["b64"].Value;
+            return true;
+        }
+
+        if (match.Groups["type2"].Success && match.Groups["b642"].Success)
+        {
+            type = match.Groups["type2"].Value;
+            b64 = match.Groups["b642"].Value;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static List<string> ExtractSqlResultMarkdownFromMessages(IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages)
+    {
+        var outTables = new List<string>();
+
+        foreach (var m in messages)
+        {
+            var text = m?.Text;
+            if (string.IsNullOrWhiteSpace(text)) continue;
+
+            foreach (Match match in ToolMarkerRegex.Matches(text))
+            {
+                if (!TryReadToolMatch(match, out var type, out var b64))
+                    continue;
+
+                if (!string.Equals(type, "sql_result", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                string json;
+                try { json = Encoding.UTF8.GetString(Convert.FromBase64String(b64)); }
+                catch { continue; }
+
+                try
+                {
+                    using var doc = JsonDocument.Parse(json);
+                    var root = doc.RootElement;
+
+                    if (root.ValueKind == JsonValueKind.Object &&
+                        root.TryGetProperty("type", out var tEl) &&
+                        tEl.ValueKind == JsonValueKind.String &&
+                        string.Equals(tEl.GetString(), "markdown_table", StringComparison.OrdinalIgnoreCase) &&
+                        root.TryGetProperty("markdown", out var mdEl) &&
+                        mdEl.ValueKind == JsonValueKind.String)
+                    {
+                        var md = mdEl.GetString();
+                        if (!string.IsNullOrWhiteSpace(md))
+                            outTables.Add(md!.Trim());
+                    }
+                }
+                catch { }
+            }
+        }
+
+        return outTables;
+    }
+
+    private static List<string> ExtractChartUrlsFromMessages(IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages)
+    {
+        var urls = new List<string>();
+
+        foreach (var m in messages)
+        {
+            var text = m?.Text;
+            if (string.IsNullOrWhiteSpace(text)) continue;
+
+            foreach (Match match in ToolMarkerRegex.Matches(text))
+            {
+                if (!TryReadToolMatch(match, out var type, out var b64))
+                    continue;
+
+                if (!string.Equals(type, "chart_result", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                string json;
+                try { json = Encoding.UTF8.GetString(Convert.FromBase64String(b64)); }
+                catch { continue; }
+
+                try
+                {
+                    using var doc = JsonDocument.Parse(json);
+                    var root = doc.RootElement;
+
+                    if (root.ValueKind == JsonValueKind.Object &&
+                        root.TryGetProperty("url", out var urlEl) &&
+                        urlEl.ValueKind == JsonValueKind.String)
+                    {
+                        var url = urlEl.GetString();
+                        if (!string.IsNullOrWhiteSpace(url))
+                            urls.Add(url!.Trim());
+                    }
+                }
+                catch { }
+            }
+        }
+
+        return urls;
+    }
+
+    private static string BuildSqlResultsAppendixMarkdown(IEnumerable<string> tables)
+    {
+        var list = tables?.Where(t => !string.IsNullOrWhiteSpace(t)).ToList() ?? new List<string>();
+        if (list.Count == 0) return "";
+
+        var sb = new StringBuilder();
+        sb.AppendLine();
+        sb.AppendLine("### Results");
+        sb.AppendLine();
+
+        int i = 1;
+        foreach (var t in list)
+        {
+            sb.AppendLine($"#### Result {i++}");
+            sb.AppendLine();
+            sb.AppendLine(NormalizeMarkdownTable(t));
+            sb.AppendLine();
+        }
+
+        return sb.ToString();
+    }
+
+    private static string BuildChartsAppendixMarkdown(IEnumerable<string> urls)
+    {
+        var list = urls?.Where(u => !string.IsNullOrWhiteSpace(u)).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+                   ?? new List<string>();
+        if (list.Count == 0) return "";
+
+        var sb = new StringBuilder();
+        sb.AppendLine();
+        sb.AppendLine("### Charts");
+        sb.AppendLine();
+
+        int i = 1;
+        foreach (var url in list)
+        {
+            sb.AppendLine($"#### Chart {i++}");
+            sb.AppendLine();
+            sb.AppendLine($"![chart]({url})");
+            sb.AppendLine();
+        }
+
+        return sb.ToString();
+    }
+
+    private static string NormalizeMarkdownTable(string md)
+    {
+        if (string.IsNullOrWhiteSpace(md)) return md;
+
+        var t = md.Trim().Replace("\\r\\n", "\n").Replace("\\n", "\n").Replace("\r\n", "\n");
+        // Normalize whitespace a bit so "same table" comparisons are more reliable
+        t = Regex.Replace(t, @"[ \t]+", " ");
+        t = Regex.Replace(t, @"\n{3,}", "\n\n");
+        return t.Trim();
+    }
+
+    private static List<string> FilterOutExistingTables(string existingMarkdown, IEnumerable<string> tables)
+    {
+        var existing = NormalizeMarkdownTable(existingMarkdown ?? "");
+        if (string.IsNullOrWhiteSpace(existing))
+            return tables?.Where(t => !string.IsNullOrWhiteSpace(t)).Select(NormalizeMarkdownTable).ToList() ?? new();
+
+        return (tables ?? Enumerable.Empty<string>())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Select(NormalizeMarkdownTable)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(t => !existing.Contains(t, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private static List<string> FilterOutExistingChartUrls(string existingMarkdown, IEnumerable<string> urls)
+    {
+        var existing = existingMarkdown ?? "";
+        return (urls ?? Enumerable.Empty<string>())
+            .Where(u => !string.IsNullOrWhiteSpace(u))
+            .Select(u => u.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(u => !existing.Contains(u, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private static string? FirstString(object obj, params string[] candidates)
+    {
+        foreach (var name in candidates)
+        {
+            var p = obj.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            if (p is null) continue;
+            var v = p.GetValue(obj);
+            if (v is string s && !string.IsNullOrWhiteSpace(s))
+                return s;
+        }
+        return null;
+    }
+
+    // -------------------------
+    // Email Send/Draft (FIXES)
+    // -------------------------
+
+    private async Task SaveDraftAsync()
+    {
+        _draftSaveError = null;
+        _draftSaveSuccess = null;
+        _draftWebLink = null;
+
+        _emailSendError = null;
+        _emailSendSuccess = null;
+
+        var to = SplitEmails(_emailTo);
+        var cc = SplitEmails(_emailCc);
+
+        if (to.Length == 0) { _draftSaveError = "Please enter at least one recipient."; return; }
+        if (string.IsNullOrWhiteSpace(_emailSubject)) { _draftSaveError = "Please enter a subject."; return; }
+        if (string.IsNullOrWhiteSpace(_emailMarkdown)) { _draftSaveError = "Email body is empty."; return; }
+
+        _sendingEmail = true;
+
+        try
+        {
+            _emailMarkdown = ApplySignature(_emailMarkdown ?? "", _signatureName);
+
+            var render = await RenderEmailHtmlForSendingWithInlineAsync(_emailMarkdown ?? "", CancellationToken.None);
+
+            var draft = await EmailService.CreateDraftAsync(
+                to,
+                _emailSubject ?? "",
+                render.Html,
+                cc.Length > 0 ? cc : null,
+                render.InlineAttachments,
+                CancellationToken.None);
+
+            _draftSaveSuccess = "Draft saved to Outlook (Drafts).";
+            _draftWebLink = draft?.WebLink;
+        }
+        catch (Exception ex)
+        {
+            _draftSaveError = ex.ToString();
+        }
+        finally
+        {
+            _sendingEmail = false;
+        }
+    }
+
+    private async Task SendEmailAsync()
+    {
+        _emailSendError = null;
+        _emailSendSuccess = null;
+
+        _draftSaveError = null;
+        _draftSaveSuccess = null;
+        _draftWebLink = null;
+
+        var to = SplitEmails(_emailTo);
+        var cc = SplitEmails(_emailCc);
+
+        if (to.Length == 0) { _emailSendError = "Please enter at least one recipient."; return; }
+
+        _sendingEmail = true;
+
+        try
+        {
+            _emailMarkdown = ApplySignature(_emailMarkdown ?? "", _signatureName);
+
+            var render = await RenderEmailHtmlForSendingWithInlineAsync(_emailMarkdown ?? "", CancellationToken.None);
+
+            await EmailService.SendAsync(
+                to,
+                _emailSubject ?? "",
+                render.Html,
+                cc.Length > 0 ? cc : null,
+                saveToSentItems: true,
+                attachments: render.InlineAttachments,
+                ct: CancellationToken.None);
+
+            _emailSendSuccess = "Email sent successfully.";
+        }
+        catch (Exception ex)
+        {
+            _emailSendError = ex.ToString();
+        }
+        finally
+        {
+            _sendingEmail = false;
+        }
+    }
+
+    private static string[] SplitEmails(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return Array.Empty<string>();
+
+        return input
+            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => x.Trim())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static string ApplySignature(string markdown, string? signatureName)
+    {
+        var name = string.IsNullOrWhiteSpace(signatureName) ? null : signatureName.Trim();
+        if (string.IsNullOrWhiteSpace(markdown))
+            return markdown;
+
+        var m = markdown;
+
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            m = m.Replace("[Your Name]", name, StringComparison.OrdinalIgnoreCase);
+            m = m.Replace("{Your Name}", name, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            var trimmed = m.TrimEnd();
+            if (!trimmed.Contains("\nBest,", StringComparison.OrdinalIgnoreCase) &&
+                !trimmed.Contains("\nRegards,", StringComparison.OrdinalIgnoreCase))
+            {
+                m = trimmed + "\n\nBest,\n" + name + "\n";
+            }
+        }
+
+        return m;
+    }
+
+    private static readonly global::Markdig.MarkdownPipeline _mdPipeline =
+        new global::Markdig.MarkdownPipelineBuilder()
+            .UseAdvancedExtensions()
+            .Build();
+
+    private static string RenderEmailBodyHtml(string markdown)
+        => global::Markdig.Markdown.ToHtml(markdown ?? "", _mdPipeline);
+
+    private sealed record RenderedEmail(string Html, List<EmailAttachment> InlineAttachments);
+
+    private async Task<RenderedEmail> RenderEmailHtmlForSendingWithInlineAsync(string markdown, CancellationToken ct)
+    {
+        var bodyHtml = RenderEmailBodyHtml(markdown ?? "");
+
+        bodyHtml = InlineTableStylesOutlookSafe(bodyHtml);
+
+        var (htmlWithCid, inlineAttachments) = await ConvertImagesToCidInlineAsync(bodyHtml, ct);
+
+        var wrapped = $@"
+<div style=""font-family: Arial, sans-serif; font-size: 14px; line-height: 1.45; color:#111;"">
+{htmlWithCid}
+</div>";
+
+        return new RenderedEmail(wrapped, inlineAttachments);
+    }
+
+    private static string InlineTableStylesOutlookSafe(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html)) return html ?? "";
+
+        const string tableStyle =
+            "border-collapse:collapse;border-spacing:0;margin:0px 0 0px 0;" +
+            "mso-table-lspace:0pt;mso-table-rspace:0pt;" +
+            "border:1px solid #d0d0d0;";
+
+        const string thStyle =
+            "border:1px solid #d0d0d0;padding:3px 6px;font-size:12px;line-height:1.2;" +
+            "text-align:left;font-weight:600;background-color:#f5f5f5;" +
+            "mso-line-height-rule:exactly;";
+
+        const string tdStyle =
+            "border:1px solid #d0d0d0;padding:3px 6px;font-size:12px;line-height:1.2;" +
+            "text-align:left;mso-line-height-rule:exactly;";
+
+        // TABLE
+        html = Regex.Replace(html, "<table([^>]*)>", m =>
+        {
+            var tag = m.Value;
+
+            if (Regex.IsMatch(tag, "\\bstyle\\s*=", RegexOptions.IgnoreCase))
+            {
+                tag = Regex.Replace(tag, "\\bstyle\\s*=\\s*\"([^\"]*)\"", mm =>
+                {
+                    var existing = mm.Groups[1].Value ?? "";
+                    if (existing.Contains("mso-table-lspace", StringComparison.OrdinalIgnoreCase))
+                        return mm.Value;
+
+                    return $"style=\"{existing.TrimEnd(';')};{tableStyle}\"";
+                }, RegexOptions.IgnoreCase);
+            }
+            else
+            {
+                tag = tag.Insert(tag.Length - 1, $" style=\"{tableStyle}\"");
+            }
+
+            if (!Regex.IsMatch(tag, "\\bcellpadding\\s*=", RegexOptions.IgnoreCase))
+                tag = tag.Replace("<table", "<table cellpadding=\"0\"", StringComparison.OrdinalIgnoreCase);
+            if (!Regex.IsMatch(tag, "\\bcellspacing\\s*=", RegexOptions.IgnoreCase))
+                tag = tag.Replace("<table", "<table cellspacing=\"0\"", StringComparison.OrdinalIgnoreCase);
+
+            if (!Regex.IsMatch(tag, "\\bborder\\s*=", RegexOptions.IgnoreCase))
+                tag = tag.Replace("<table", "<table border=\"1\"", StringComparison.OrdinalIgnoreCase);
+            if (!Regex.IsMatch(tag, "\\bbordercolor\\s*=", RegexOptions.IgnoreCase))
+                tag = tag.Replace("<table", "<table bordercolor=\"#d0d0d0\"", StringComparison.OrdinalIgnoreCase);
+
+            return tag;
+        }, RegexOptions.IgnoreCase);
+
+        // TH
+        html = Regex.Replace(html, "<th([^>]*)>", m =>
+        {
+            var tag = m.Value;
+
+            if (Regex.IsMatch(tag, "\\bstyle\\s*=", RegexOptions.IgnoreCase))
+            {
+                tag = Regex.Replace(tag, "\\bstyle\\s*=\\s*\"([^\"]*)\"", mm =>
+                {
+                    var existing = mm.Groups[1].Value ?? "";
+                    if (existing.Contains("border:", StringComparison.OrdinalIgnoreCase))
+                        return mm.Value;
+
+                    return $"style=\"{existing.TrimEnd(';')};border:1px solid #d0d0d0;\"";
+                }, RegexOptions.IgnoreCase);
+
+                if (!Regex.IsMatch(tag, "\\bbgcolor\\s*=", RegexOptions.IgnoreCase))
+                    tag = tag.Insert(tag.Length - 1, " bgcolor=\"#f5f5f5\"");
+
+                return tag;
+            }
+
+            return tag.Insert(tag.Length - 1, $" style=\"{thStyle}\" bgcolor=\"#f5f5f5\"");
+        }, RegexOptions.IgnoreCase);
+
+        // TD
+        html = Regex.Replace(html, "<td([^>]*)>", m =>
+        {
+            var tag = m.Value;
+
+            if (Regex.IsMatch(tag, "\\bstyle\\s*=", RegexOptions.IgnoreCase))
+            {
+                tag = Regex.Replace(tag, "\\bstyle\\s*=\\s*\"([^\"]*)\"", mm =>
+                {
+                    var existing = mm.Groups[1].Value ?? "";
+                    if (existing.Contains("border:", StringComparison.OrdinalIgnoreCase))
+                        return mm.Value;
+
+                    return $"style=\"{existing.TrimEnd(';')};border:1px solid #d0d0d0;\"";
+                }, RegexOptions.IgnoreCase);
+
+                return tag;
+            }
+
+            return tag.Insert(tag.Length - 1, $" style=\"{tdStyle}\"");
+        }, RegexOptions.IgnoreCase);
+
+        return html;
+    }
+
+    private async Task<(string Html, List<EmailAttachment> InlineAttachments)> ConvertImagesToCidInlineAsync(string html, CancellationToken ct)
+    {
+        var imgRegex = new Regex(
+            "<img\\b(?<pre>[^>]*?)\\bsrc\\s*=\\s*\"(?<src>[^\"]+)\"(?<post>[^>]*)>",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        var urls = new List<string>();
+
+        foreach (Match m in imgRegex.Matches(html))
+        {
+            var src = m.Groups["src"].Value?.Trim();
+            if (string.IsNullOrWhiteSpace(src)) continue;
+
+            if (src.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ||
+                src.StartsWith("cid:", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var fetchUrl = src;
+
+            if (src.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                src.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                // ok
+            }
+            else
+            {
+                try
+                {
+                    fetchUrl = new Uri(new Uri(Nav.BaseUri), src).ToString();
+                }
+                catch
+                {
+                    continue;
+                }
+            }
+
+            urls.Add(src + "|FETCH|" + fetchUrl);
+        }
+
+        if (urls.Count == 0)
+            return (html, new List<EmailAttachment>());
+
+        using var http = HttpClientFactory.CreateClient();
+        http.Timeout = TimeSpan.FromSeconds(12);
+
+        var cookieHeader = HttpContextAccessor.HttpContext?.Request?.Headers["Cookie"].ToString();
+        if (!string.IsNullOrWhiteSpace(cookieHeader))
+        {
+            http.DefaultRequestHeaders.Remove("Cookie");
+            http.DefaultRequestHeaders.Add("Cookie", cookieHeader);
+        }
+
+        var inline = new List<EmailAttachment>();
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        int idx = 1;
+        foreach (var entry in urls.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var parts = entry.Split("|FETCH|", 2, StringSplitOptions.None);
+            var originalSrc = parts[0];
+            var fetchUrl = parts.Length > 1 ? parts[1] : parts[0];
+            try
+            {
+                using var resp = await http.GetAsync(fetchUrl, ct);
+                if (!resp.IsSuccessStatusCode) continue;
+
+                var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
+                if (bytes is null || bytes.Length == 0) continue;
+
+                if (bytes.Length > 4_000_000) continue;
+
+                var contentType = resp.Content.Headers.ContentType?.MediaType?.ToLowerInvariant();
+                if (string.IsNullOrWhiteSpace(contentType))
+                {
+                    if (fetchUrl.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) contentType = "image/png";
+                    else if (fetchUrl.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) || fetchUrl.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase)) contentType = "image/jpeg";
+                    else if (fetchUrl.EndsWith(".gif", StringComparison.OrdinalIgnoreCase)) contentType = "image/gif";
+                    else contentType = "image/png";
+                }
+
+                var ext = contentType switch
+                {
+                    "image/jpeg" => "jpg",
+                    "image/gif" => "gif",
+                    _ => "png"
+                };
+
+                var cid = $"img{idx}@inline";
+                var fileName = $"inline-{idx}.{ext}";
+                idx++;
+
+                inline.Add(new EmailAttachment(
+                    FileName: fileName,
+                    ContentType: contentType!,
+                    ContentBytes: bytes,
+                    IsInline: true,
+                    ContentId: cid));
+
+                map[originalSrc] = $"cid:{cid}";
+            }
+            catch
+            {
+                // ignore; keep remote src
+            }
+        }
+
+        if (map.Count == 0)
+            return (html, inline);
+
+        var replaced = imgRegex.Replace(html, m =>
+        {
+            var src = m.Groups["src"].Value;
+            if (map.TryGetValue(src, out var cidSrc))
+                return $"<img{m.Groups["pre"].Value}src=\"{cidSrc}\"{m.Groups["post"].Value}>";
+
+            return m.Value;
+        });
+
+        return (replaced, inline);
+    }
+
+    // -------------------------
+    // Minimal fallback + display name
+    // -------------------------
+
+    private static string BuildFallbackEmailMarkdown(object r, string? signatureName)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Hi team,");
+        sb.AppendLine();
+        sb.AppendLine("Here is a summary of our conversation:");
+        sb.AppendLine();
+        sb.AppendLine("Best,");
+        sb.AppendLine(signatureName ?? "[Your Name]");
+        return sb.ToString();
+    }
+
+    private async Task<string?> GetUserDisplayNameAsync(string userId)
+    {
         try
         {
             await using var db = await DbFactory.CreateDbContextAsync();
 
-            if (Model.id == 0)
-                db.TableReferencings.Add(Model);
-            else
-                db.TableReferencings.Update(Model);
+            var row = await db.AppUsers
+                .AsNoTracking()
+                .Where(u => u.UserId == userId)
+                .Select(u => new
+                {
+                    First = EF.Property<string?>(u, "FirstName"),
+                    Last = EF.Property<string?>(u, "LastName"),
+                    UserName = u.UserName,
+                    Email = u.Email
+                })
+                .FirstOrDefaultAsync();
 
-            await db.SaveChangesAsync();
-            Snackbar.Add("Saved.", Severity.Success);
-            MudDialog.Close(DialogResult.Ok(true));
+            if (row is null) return null;
+
+            var full = $"{row.First} {row.Last}".Trim();
+            if (!string.IsNullOrWhiteSpace(full)) return full;
+
+            if (!string.IsNullOrWhiteSpace(row.UserName)) return row.UserName;
+            if (!string.IsNullOrWhiteSpace(row.Email)) return row.Email;
+
+            return null;
         }
-        catch (Exception ex)
-        {
-            Snackbar.Add($"Save failed: {ex.Message}", Severity.Error);
-        }
+        catch { return null; }
     }
 
+    private void Close() => MudDialog.Close(DialogResult.Ok(true));
 }

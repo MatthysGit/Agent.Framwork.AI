@@ -9,8 +9,8 @@ public sealed class DonutChartRenderer
         string title,
         IReadOnlyList<string> labels,
         IReadOnlyList<double> values,
-        int width = 900,
-        int height = 600,
+        int width = 450,
+        int height = 300,
         float innerRadiusRatio = 0.55f)
     {
         if (labels.Count != values.Count) throw new ArgumentException("labels and values must have the same length.");

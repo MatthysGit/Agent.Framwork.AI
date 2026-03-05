@@ -10,8 +10,8 @@ public sealed class BarChartRenderer
         string yAxisLabel,
         IReadOnlyList<string> labels,
         IReadOnlyList<double> values,
-        int width = 1200,
-        int height = 700)
+        int width = 600,
+        int height = 350)
     {
         if (labels.Count != values.Count)
             throw new ArgumentException("labels and values must have the same length.");
