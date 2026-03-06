@@ -63,6 +63,15 @@ public sealed class RouterAgent
                 Reason: "Hard-guard: forecasting request detected.");
         }
 
+        // Hard guard: anomaly detection / abnormality analysis intent
+        if (IsAnomalyDetectionIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.AnomalyDetectionAgentName,
+                Reason: "Hard-guard: anomaly detection request detected.");
+        }
+
         // Hard guard: "what is included / what does it say" doc questions
         if (IsDocumentContentQuestion(userMessage))
         {
@@ -219,6 +228,9 @@ User message:
 
             if (IsForecastingIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.ForecastingAgentName, "Hard-guard: forecasting request detected.");
+
+            if (IsAnomalyDetectionIntent(userMessage))
+                return new RouteResult("agent", ChatAgentFactory.AnomalyDetectionAgentName, "Hard-guard: anomaly detection request detected.");
 
             if (IsDocumentContentQuestion(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.DocumentSearchAgentName, "Hard-guard: document content question detected.");
@@ -388,6 +400,37 @@ User message:
             t.Contains("volume") || t.Contains("cost") || t.Contains("margin") || t.Contains("profit");
 
         return mentionsForecast || (mentionsFutureWindow && businessMetric);
+    }
+
+    private static bool IsAnomalyDetectionIntent(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        if (IsExcelAnalyticsIntent(text) || IsForecastingIntent(text))
+            return false;
+
+        var t = text.ToLowerInvariant();
+
+        var mentionsAnomaly =
+            t.Contains("anomaly") ||
+            t.Contains("anomalies") ||
+            t.Contains("outlier") ||
+            t.Contains("outliers") ||
+            t.Contains("abnormal") ||
+            t.Contains("unusual") ||
+            t.Contains("unexpected") ||
+            t.Contains("spike") ||
+            t.Contains("drop") ||
+            t.Contains("structural break") ||
+            t.Contains("change point") ||
+            t.Contains("deviation");
+
+        var businessMetric =
+            t.Contains("sales") || t.Contains("revenue") || t.Contains("order") || t.Contains("demand") ||
+            t.Contains("volume") || t.Contains("cost") || t.Contains("margin") || t.Contains("profit") ||
+            t.Contains("headcount") || t.Contains("employee") || t.Contains("performance");
+
+        return mentionsAnomaly && (businessMetric || t.Contains("trend") || t.Contains("time series") || t.Contains("metric"));
     }
 
     private static bool IsExecutiveInsightIntent(string text)

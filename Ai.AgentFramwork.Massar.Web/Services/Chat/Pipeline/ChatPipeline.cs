@@ -7,6 +7,8 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Ai.AgentFramwork.Massar.Web.Services.Anomaly;
+using Ai.AgentFramwork.Massar.Web.Services.Anomaly.Modelss;
 
 namespace Ai.AgentFramwork.Massar.Web.Services.Chat.Pipeline;
 
@@ -30,8 +32,9 @@ public sealed class ChatPipeline
     // Optional: allow ChatService to pass the current user id (claims subject, etc.)
     private readonly Func<string?>? _getOwnerUserId;
 
-    private const string ExecutiveInsightAgentName = "ExecutiveInsightAgent";
-    private const string ForecastingAgentName = "ForecastingAgent";
+    //private const string ExecutiveInsightAgentName = "ExecutiveInsightAgent";
+    //private const string ForecastingAgentName = "ForecastingAgent";
+    //private const string AnomalyDetectionAgentName = "AnomalyDetectionAgent";
 
     public ChatPipeline(
         RouterAgent router,
@@ -136,7 +139,7 @@ public sealed class ChatPipeline
         // ----------------------------
         // Executive insight orchestration path
         // ----------------------------
-        if (string.Equals(r.Agent, ExecutiveInsightAgentName, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(r.Agent, ChatAgentFactory.ExecutiveInsightAgentName, StringComparison.OrdinalIgnoreCase))
         {
             var executiveResult = await ExecuteExecutiveInsightAsync(userText, r.Reason, ct);
 
@@ -146,7 +149,7 @@ public sealed class ChatPipeline
             return executiveResult;
         }
 
-        if (string.Equals(r.Agent, ForecastingAgentName, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(r.Agent, ChatAgentFactory.ForecastingAgentName, StringComparison.OrdinalIgnoreCase))
         {
             var forecastResult = await ExecuteForecastAsync(userText, r.Reason, ct);
 
@@ -154,6 +157,16 @@ public sealed class ChatPipeline
             Console.WriteLine($"[PIPELINE] done agent={forecastResult.RoutedAgent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
 
             return forecastResult;
+        }
+
+        if (string.Equals(r.Agent, ChatAgentFactory.AnomalyDetectionAgentName, StringComparison.OrdinalIgnoreCase))
+        {
+            var anomalyResult = await ExecuteAnomalyDetectionAsync(userText, r.Reason, ct);
+
+            swTotal.Stop();
+            Console.WriteLine($"[PIPELINE] done agent={anomalyResult.RoutedAgent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
+
+            return anomalyResult;
         }
 
         // ----------------------------
@@ -452,7 +465,7 @@ USER REQUEST:
         var executivePrompt = BuildExecutiveSynthesisPrompt(userText, finalSupportText);
 
         var executive = await _caller.CallAgentAsync(
-            ExecutiveInsightAgentName,
+            ChatAgentFactory.ExecutiveInsightAgentName,
             executivePrompt,
             cancellationToken: ct);
 
@@ -468,7 +481,7 @@ USER REQUEST:
         return await MaybeAttachDecisionCandidateAsync(
             userText,
             checkedAnswer,
-            ExecutiveInsightAgentName,
+            ChatAgentFactory.ExecutiveInsightAgentName,
             routerReason + " (grounded via DataExplorerAgent)",
             ct);
     }
@@ -505,7 +518,7 @@ USER REQUEST:
         if (!TryParseForecastInputPoints(supportText, out var inputPoints))
         {
             var failText = "I couldn't generate a forecast because the supporting query did not return a usable time series. Please ask for a forecast with a date-based metric such as monthly sales, revenue, or orders.";
-            return await MaybeAttachDecisionCandidateAsync(userText, failText, ForecastingAgentName, routerReason, ct);
+            return await MaybeAttachDecisionCandidateAsync(userText, failText, ChatAgentFactory.ForecastingAgentName, routerReason, ct);
         }
 
         var forecast = ForecastingService.GenerateForecast(request, inputPoints);
@@ -529,9 +542,112 @@ USER REQUEST:
         return await MaybeAttachDecisionCandidateAsync(
             userText,
             checkedAnswer,
-            ForecastingAgentName,
+            ChatAgentFactory.ForecastingAgentName,
             routerReason + " (grounded via DataExplorerAgent)",
             ct);
+    }
+
+
+    private async Task<PipelineResult> ExecuteAnomalyDetectionAsync(
+        string userText,
+        string routerReason,
+        CancellationToken ct)
+    {
+        var request = AnomalyRequestParser.Parse(userText);
+        var supportPrompt = AnomalySupportPromptBuilder.Build(request);
+
+        var support = await _caller.CallAgentAsync(
+            ChatAgentFactory.SqlAgentName,
+            supportPrompt,
+            cancellationToken: ct);
+
+        var supportText = (support.Text ?? string.Empty).Trim();
+
+        if (LooksLikeClarifyingQuestion(supportText))
+        {
+            var retryPrompt = AnomalySupportPromptBuilder.Build(request, stricter: true);
+            support = await _caller.CallAgentAsync(
+                ChatAgentFactory.SqlAgentName,
+                retryPrompt,
+                cancellationToken: ct);
+            supportText = (support.Text ?? string.Empty).Trim();
+        }
+
+        if (!AnomalyInputParser.TryParse(supportText, request.MetricName, request.GroupBy, out var dataset))
+        {
+            var failText = "I couldn't run anomaly detection because the supporting query did not return a usable time series. Please ask for anomalies on a date-based metric such as monthly sales, revenue, orders, cost, or headcount.";
+            return await MaybeAttachDecisionCandidateAsync(userText, failText, ChatAgentFactory.AnomalyDetectionAgentName, routerReason, ct);
+        }
+
+        var coordinator = new AnomalyDetectionCoordinator();
+        var result = coordinator.Execute(request, dataset);
+        var markdown = result.Narrative;
+
+        if (result.TableColumns.Count > 0 && result.TableRows.Count > 0)
+            markdown += "\n\n" + BuildMarkdownTable(result.TableColumns, result.TableRows);
+
+        try
+        {
+            var chartUrl = await CreateAnomalyChartAsync(result);
+            markdown = $"![chart]({chartUrl})\n\n" + markdown;
+            markdown += WrapHiddenToolPayload("chart_result", JsonSerializer.Serialize(new { type = "chart_url", url = chartUrl }));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("[ANOMALY_CHART_FALLBACK] " + ex);
+        }
+
+        markdown += WrapHiddenToolPayload("anomaly_result", AnomalyHiddenPayloadBuilder.Build(result));
+
+        var checkedAnswer = await RunPpiSafeAsync(userText, markdown, ct);
+
+        return await MaybeAttachDecisionCandidateAsync(
+            userText,
+            checkedAnswer,
+            ChatAgentFactory.AnomalyDetectionAgentName,
+            routerReason + " (grounded via DataExplorerAgent)",
+            ct);
+    }
+
+    private async Task<string> CreateAnomalyChartAsync(AnomalyDetectionResult result)
+    {
+        if (!result.HasChart)
+            throw new InvalidOperationException("No anomaly chart payload available.");
+
+        if (result.SeriesNames.Count > 1)
+        {
+            return await _chartTools.CreateMultiSeriesLineChartPngAsync(
+                result.ChartTitle,
+                "Period",
+                "Value",
+                result.ChartLabels.ToArray(),
+                result.SeriesNames.ToArray(),
+                result.SeriesValues.ToArray(),
+                width: 1000,
+                height: 600);
+        }
+
+        return await _chartTools.CreateLineChartPngAsync(
+            result.ChartTitle,
+            "Period",
+            "Value",
+            result.ChartLabels.ToArray(),
+            result.SeriesValues[0],
+            width: 1000,
+            height: 600);
+    }
+
+    private static string BuildMarkdownTable(IReadOnlyList<string> columns, IReadOnlyList<Dictionary<string, string>> rows)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("| " + string.Join(" | ", columns.Select(EscapeMd)) + " |");
+        sb.AppendLine("| " + string.Join(" | ", columns.Select(_ => "---")) + " |");
+        foreach (var row in rows)
+        {
+            var cells = columns.Select(c => EscapeMd(row.TryGetValue(c, out var v) ? v : string.Empty));
+            sb.AppendLine("| " + string.Join(" | ", cells) + " |");
+        }
+        return sb.ToString().Trim();
     }
 
     private static string BuildForecastSupportDataPrompt(string userText, ForecastRequest request, bool stricter = false)
