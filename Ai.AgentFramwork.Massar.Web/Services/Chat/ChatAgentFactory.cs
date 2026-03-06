@@ -29,6 +29,7 @@ public sealed class ChatAgentFactory
     public const string ExecutiveInsightAgentName = "ExecutiveInsightAgent";
     public const string ForecastingAgentName = "ForecastingAgent";
     public const string AnomalyDetectionAgentName = "AnomalyDetectionAgent";
+    public const string DataSegmentationAgentName = "DataSegmentationAgent";
 
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
     private readonly IConfiguration _configuration;
@@ -111,6 +112,8 @@ public sealed class ChatAgentFactory
         _registry.Register(AnomalyDetectionAgentName, (sp, chatClient) =>
             new AnomalyDetectionAgent().Build(chatClient, AnomalyDetectionAgentName));
 
+        _registry.Register(DataSegmentationAgentName, (sp, chatClient) =>
+            new DataSegmentationAgent().Build(chatClient, DataSegmentationAgentName, sqlServerSelectTool));
 
         // ✅ Caller chooses model at runtime per agent
         var caller = new AgentCallerTool(

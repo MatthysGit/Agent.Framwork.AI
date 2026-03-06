@@ -169,6 +169,16 @@ public sealed class ChatPipeline
             return anomalyResult;
         }
 
+        if (string.Equals(r.Agent, "DataSegmentationAgent", StringComparison.OrdinalIgnoreCase))
+        {
+            var segmentationResult = await ExecuteSegmentationAsync(userText, r.Reason, ct);
+
+            swTotal.Stop();
+            Console.WriteLine($"[PIPELINE] done agent={segmentationResult.RoutedAgent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
+
+            return segmentationResult;
+        }
+
         // ----------------------------
         // Chart path (SQL -> JSON -> chart tool -> markdown image; attach hidden payload for email)
         // ----------------------------
@@ -608,6 +618,409 @@ USER REQUEST:
             routerReason + " (grounded via DataExplorerAgent)",
             ct);
     }
+
+
+    private async Task<PipelineResult> ExecuteSegmentationAsync(
+        string userText,
+        string routerReason,
+        CancellationToken ct)
+    {
+        var supportPrompt = BuildSegmentationSupportDataPrompt(userText);
+
+        var support = await _caller.CallAgentAsync(
+            ChatAgentFactory.SqlAgentName,
+            supportPrompt,
+            cancellationToken: ct);
+
+        var supportText = (support.Text ?? string.Empty).Trim();
+
+        if (LooksLikeClarifyingQuestion(supportText))
+        {
+            Console.WriteLine("[SEGMENTATION_RETRY] SqlAgent returned a question. Retrying with stricter enforcement.");
+
+            var retryPrompt = BuildSegmentationSupportDataPrompt(userText, stricter: true);
+
+            support = await _caller.CallAgentAsync(
+                ChatAgentFactory.SqlAgentName,
+                retryPrompt,
+                cancellationToken: ct);
+
+            supportText = (support.Text ?? string.Empty).Trim();
+        }
+
+        if (!TryParseSegmentationRows(supportText, out var rows, out var parseReason))
+        {
+            var failText = "I couldn't run segmentation because the supporting query did not return a usable grouped dataset. Please ask for a segmentation such as sales by region, revenue by category, orders by status, or headcount by department.";
+            return await MaybeAttachDecisionCandidateAsync(userText, failText, "DataSegmentationAgent", routerReason + $" ({parseReason})", ct);
+        }
+
+        var markdown = BuildSegmentationMarkdown(userText, rows);
+
+        try
+        {
+            var chartUrl = await CreateSegmentationChartAsync(userText, rows);
+            markdown = $"![chart]({chartUrl})\n\n" + markdown;
+            markdown += WrapHiddenToolPayload("chart_result", JsonSerializer.Serialize(new { type = "chart_url", url = chartUrl }));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("[SEGMENTATION_CHART_FALLBACK] " + ex);
+        }
+
+        markdown += WrapHiddenToolPayload("segmentation_result", BuildSegmentationHiddenPayload(userText, rows));
+
+        var checkedAnswer = await RunPpiSafeAsync(userText, markdown, ct);
+
+        return await MaybeAttachDecisionCandidateAsync(
+            userText,
+            checkedAnswer,
+            "DataSegmentationAgent",
+            routerReason + " (grounded via SqlAgent)",
+            ct);
+    }
+
+    private static string BuildSegmentationSupportDataPrompt(string userText, bool stricter = false)
+    {
+        var strict = stricter
+            ? "- You previously asked a question. That is NOT allowed. Choose the most reasonable interpretation and proceed."
+            : "- Do NOT ask follow-up questions. Choose the most reasonable interpretation and proceed.";
+
+        return $@"
+You are the SQL agent for grouped segmentation analysis.
+
+NON-NEGOTIABLE RULES:
+{strict}
+- Use database tools only.
+- Return a grouped result suitable for segmentation analysis.
+- Prefer one clear segment dimension and one numeric metric.
+- Limit the result to the most relevant 10-20 segments unless the user explicitly asks otherwise.
+- Return the segments ordered by Value descending when that makes sense.
+
+CRITICAL TOOL ORDER RULE (MUST FOLLOW):
+- At the START of EVERY user request, you MUST call TableAndViewsInDatabse first.
+- You MUST NOT call ExecuteSelectAsync until AFTER you have called TableAndViewsInDatabse for this request.
+- If you need any table/column info, call TableColumsByTable / TableRelationships ONLY AFTER TableAndViewsInDatabse.
+- If TableAndViewsInDatabse fails or returns empty, reply exactly: unauthorized access.
+
+MANDATORY OUTPUT RULES:
+- Return ONLY the JSON returned by ExecuteSelectAsync.
+- No markdown, no prose, no wrapping.
+- The returned rows MUST represent grouped segmentation data.
+- Use EXACT logical columns whenever possible:
+  - Segment: the segment/group label
+  - Value: the numeric measure for that segment
+  - SharePct: optional percentage share of total
+  - Rank: optional rank
+- If exact aliases are not possible, still return one categorical grouping column and one numeric measure column.
+
+USER REQUEST:
+{userText}
+";
+    }
+
+    private static bool TryParseSegmentationRows(string text, out List<SegmentationRow> rows, out string reason)
+    {
+        rows = new List<SegmentationRow>();
+        reason = "no grouped rows parsed";
+
+        var json = ExtractFirstJsonObject(text) ?? (LooksLikeJson(text) ? text : null);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            reason = "no json payload";
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!TryGetPropIgnoreCase(doc.RootElement, "rows", out var rowsEl) || rowsEl.ValueKind != JsonValueKind.Array)
+            {
+                reason = "rows array missing";
+                return false;
+            }
+
+            var rawRows = rowsEl.EnumerateArray().Where(r => r.ValueKind == JsonValueKind.Object).ToList();
+            if (rawRows.Count == 0)
+            {
+                reason = "rows array empty";
+                return false;
+            }
+
+            foreach (var row in rawRows)
+            {
+                var map = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+                foreach (var p in row.EnumerateObject())
+                    map[p.Name] = p.Value;
+
+                if (!TryResolveSegmentLabel(map, out var segment))
+                    continue;
+
+                if (!TryResolveNumericValue(map, out var value, out var valueColumn))
+                    continue;
+
+                double? sharePct = null;
+                if (TryResolveOptionalNumeric(map, new[] { "SharePct", "Share", "Percentage", "Percent", "Pct", "ContributionPct" }, out var s))
+                    sharePct = s;
+
+                int? rank = null;
+                if (TryResolveOptionalInteger(map, new[] { "Rank", "RowNum", "Position" }, out var rnk))
+                    rank = rnk;
+
+                rows.Add(new SegmentationRow(segment, value, sharePct, rank, valueColumn));
+            }
+
+            if (rows.Count == 0)
+            {
+                reason = "no segment/value pairs found";
+                return false;
+            }
+
+            rows = rows
+                .OrderBy(r => r.Rank ?? int.MaxValue)
+                .ThenByDescending(r => r.Value)
+                .ThenBy(r => r.Segment, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var total = rows.Sum(r => r.Value);
+            if (total > 0)
+            {
+                rows = rows.Select(r =>
+                    r.SharePct.HasValue
+                        ? r
+                        : r with { SharePct = Math.Round((r.Value / total) * 100d, 2) })
+                    .ToList();
+            }
+
+            reason = "ok";
+            return true;
+        }
+        catch
+        {
+            reason = "invalid json payload";
+            return false;
+        }
+    }
+
+    private static string BuildSegmentationMarkdown(string userText, List<SegmentationRow> rows)
+    {
+        var topRows = rows.Take(20).ToList();
+        var total = rows.Sum(r => r.Value);
+        var top = rows.OrderByDescending(r => r.Value).First();
+        var bottom = rows.OrderBy(r => r.Value).First();
+        var top3Share = total > 0
+            ? rows.OrderByDescending(r => r.Value).Take(3).Sum(r => r.Value) / total * 100d
+            : 0d;
+
+        var metricLabel = GuessSegmentationMetricLabel(userText, rows);
+        var sb = new StringBuilder();
+
+        sb.AppendLine("Segmentation Summary");
+        sb.AppendLine($"The largest segment is **{EscapeMd(top.Segment)}** with **{FormatMetricValue(top.Value)}** {EscapeMd(metricLabel)}.");
+        sb.AppendLine($"The smallest segment is **{EscapeMd(bottom.Segment)}** with **{FormatMetricValue(bottom.Value)}** {EscapeMd(metricLabel)}.");
+        if (total > 0)
+            sb.AppendLine($"The top 3 segments contribute **{top3Share:0.##}%** of the total.");
+        sb.AppendLine();
+
+        sb.AppendLine("Key Insights");
+        sb.AppendLine($"• Total across all returned segments: **{FormatMetricValue(total)}** {EscapeMd(metricLabel)}.");
+        sb.AppendLine($"• Number of returned segments: **{rows.Count}**.");
+        if (top.SharePct.HasValue)
+            sb.AppendLine($"• {EscapeMd(top.Segment)} contributes **{top.SharePct.Value:0.##}%** of the total.");
+        if (rows.Count >= 2)
+        {
+            var second = rows.OrderByDescending(r => r.Value).Skip(1).First();
+            var gap = top.Value - second.Value;
+            sb.AppendLine($"• Gap between the top two segments: **{FormatMetricValue(gap)}** {EscapeMd(metricLabel)}.");
+        }
+        sb.AppendLine();
+
+        sb.AppendLine("| Segment | Value | Share % | Rank |");
+        sb.AppendLine("| --- | ---: | ---: | ---: |");
+        var rankCounter = 1;
+        foreach (var row in topRows)
+        {
+            var share = row.SharePct.HasValue ? row.SharePct.Value.ToString("0.##") : "";
+            var rank = row.Rank?.ToString() ?? rankCounter.ToString();
+            sb.AppendLine($"| {EscapeMd(row.Segment)} | {FormatMetricValue(row.Value)} | {share} | {rank} |");
+            rankCounter++;
+        }
+
+        if (rows.Count > topRows.Count)
+            sb.AppendLine($"\nShowing first {topRows.Count} rows of {rows.Count} total segments.");
+
+        return sb.ToString().Trim();
+    }
+
+    private async Task<string> CreateSegmentationChartAsync(string userText, List<SegmentationRow> rows)
+    {
+        var chartRows = rows
+            .OrderByDescending(r => r.Value)
+            .Take(12)
+            .ToList();
+
+        if (chartRows.Count == 0)
+            throw new InvalidOperationException("No segmentation rows available for chart.");
+
+        var labels = chartRows.Select(r => r.Segment).ToArray();
+        var values = chartRows.Select(r => r.Value).ToArray();
+
+        return await _chartTools.CreateBarChartPngAsync(
+            GuessSegmentationChartTitle(userText),
+            "Segment",
+            GuessSegmentationMetricLabel(userText, rows),
+            labels,
+            values,
+            width: 1000,
+            height: 600);
+    }
+
+    private static string BuildSegmentationHiddenPayload(string userText, List<SegmentationRow> rows)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            type = "segmentation_result",
+            title = GuessSegmentationChartTitle(userText),
+            metric = GuessSegmentationMetricLabel(userText, rows),
+            segments = rows.Select(r => new
+            {
+                segment = r.Segment,
+                value = r.Value,
+                sharePct = r.SharePct,
+                rank = r.Rank
+            }).ToList()
+        });
+    }
+
+    private static bool TryResolveSegmentLabel(Dictionary<string, JsonElement> map, out string segment)
+    {
+        foreach (var key in new[] { "Segment", "Category", "Group", "Series", "Label", "Name", "Type", "Status", "Region", "Territory", "Department" })
+        {
+            if (map.TryGetValue(key, out var el))
+            {
+                segment = el.ValueKind == JsonValueKind.String ? (el.GetString() ?? "") : el.ToString();
+                if (!string.IsNullOrWhiteSpace(segment))
+                    return true;
+            }
+        }
+
+        foreach (var kvp in map)
+        {
+            if (kvp.Value.ValueKind == JsonValueKind.String)
+            {
+                segment = kvp.Value.GetString() ?? "";
+                if (!string.IsNullOrWhiteSpace(segment))
+                    return true;
+            }
+        }
+
+        segment = "";
+        return false;
+    }
+
+    private static bool TryResolveNumericValue(Dictionary<string, JsonElement> map, out double value, out string valueColumn)
+    {
+        foreach (var key in new[] { "Value", "Amount", "Metric", "Total", "Count", "Sales", "Revenue", "Orders", "Headcount" })
+        {
+            if (map.TryGetValue(key, out var el) && TryGetDoubleValue(el, out value))
+            {
+                valueColumn = key;
+                return true;
+            }
+        }
+
+        foreach (var kvp in map)
+        {
+            if (TryGetDoubleValue(kvp.Value, out value))
+            {
+                valueColumn = kvp.Key;
+                return true;
+            }
+        }
+
+        value = 0;
+        valueColumn = "Value";
+        return false;
+    }
+
+    private static bool TryResolveOptionalNumeric(Dictionary<string, JsonElement> map, IEnumerable<string> keys, out double value)
+    {
+        foreach (var key in keys)
+        {
+            if (map.TryGetValue(key, out var el) && TryGetDoubleValue(el, out value))
+                return true;
+        }
+
+        value = 0;
+        return false;
+    }
+
+    private static bool TryResolveOptionalInteger(Dictionary<string, JsonElement> map, IEnumerable<string> keys, out int value)
+    {
+        foreach (var key in keys)
+        {
+            if (map.TryGetValue(key, out var el))
+            {
+                if (el.ValueKind == JsonValueKind.Number && el.TryGetInt32(out value))
+                    return true;
+                if (el.ValueKind == JsonValueKind.String && int.TryParse(el.GetString(), out value))
+                    return true;
+            }
+        }
+
+        value = 0;
+        return false;
+    }
+
+    private static bool TryGetDoubleValue(JsonElement el, out double value)
+    {
+        if (el.ValueKind == JsonValueKind.Number && el.TryGetDouble(out value))
+            return true;
+
+        if (el.ValueKind == JsonValueKind.String)
+        {
+            var s = (el.GetString() ?? "").Replace(",", "").Replace("%", "").Trim();
+            if (double.TryParse(s, out value))
+                return true;
+        }
+
+        value = 0;
+        return false;
+    }
+
+    private static string GuessSegmentationMetricLabel(string userText, List<SegmentationRow> rows)
+    {
+        var t = (userText ?? string.Empty).ToLowerInvariant();
+
+        if (t.Contains("sales")) return "sales";
+        if (t.Contains("revenue")) return "revenue";
+        if (t.Contains("order")) return "orders";
+        if (t.Contains("headcount") || t.Contains("employee")) return "headcount";
+        if (t.Contains("cost")) return "cost";
+        if (rows.Count > 0 && !string.IsNullOrWhiteSpace(rows[0].ValueColumn))
+            return rows[0].ValueColumn;
+
+        return "value";
+    }
+    private static string GuessSegmentationChartTitle(string userText)
+    {
+        var cleaned = Regex.Replace((userText ?? "Segmentation").Trim(), @"\s+", " ");
+        return cleaned.Length <= 80 ? cleaned : cleaned[..80];
+    }
+
+    private static string FormatMetricValue(double value)
+    {
+        if (Math.Abs(value - Math.Round(value)) < 0.0000001d)
+            return Math.Round(value).ToString("0");
+
+        return value.ToString("0.##");
+    }
+
+    private sealed record SegmentationRow(
+        string Segment,
+        double Value,
+        double? SharePct,
+        int? Rank,
+        string ValueColumn);
 
     private async Task<string> CreateAnomalyChartAsync(AnomalyDetectionResult result)
     {
