@@ -26,7 +26,8 @@ public sealed class ChatAgentFactory
     public const string PpiAgentName = "PpiAgent";
     public const string ExcelAnalyticsAgentName = "ExcelAnalyticsAgent";
     public const string DataExplorerAgentName = "DataExplorerAgent";
-
+    public const string ExecutiveInsightAgentName = "ExecutiveInsightAgent";
+    
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
     private readonly IConfiguration _configuration;
     private readonly IAgentRegistry _registry;  
@@ -97,6 +98,11 @@ public sealed class ChatAgentFactory
 
         _registry.Register(DataExplorerAgentName, (sp, chatClient) =>
             new SqlAgent().Build(chatClient, DataExplorerAgentName, sqlServerSelectTool));
+
+
+        _registry.Register(ExecutiveInsightAgentName, (sp, chatClient) =>
+            new ExecutiveInsightAgent().Build(chatClient, ExecutiveInsightAgentName));
+        
 
         // ✅ Caller chooses model at runtime per agent
         var caller = new AgentCallerTool(

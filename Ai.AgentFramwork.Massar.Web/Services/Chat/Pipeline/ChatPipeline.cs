@@ -29,6 +29,8 @@ public sealed class ChatPipeline
     // Optional: allow ChatService to pass the current user id (claims subject, etc.)
     private readonly Func<string?>? _getOwnerUserId;
 
+    private const string ExecutiveInsightAgentName = "ExecutiveInsightAgent";
+
     public ChatPipeline(
         RouterAgent router,
         AgentCallerTool caller,
@@ -126,6 +128,20 @@ public sealed class ChatPipeline
             Console.WriteLine($"[PIPELINE] done agent={r.Agent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
 
             return new PipelineResult(json ?? "No edit result returned.", r.Agent, r.Reason);
+        }
+
+
+        // ----------------------------
+        // Executive insight orchestration path
+        // ----------------------------
+        if (string.Equals(r.Agent, ExecutiveInsightAgentName, StringComparison.OrdinalIgnoreCase))
+        {
+            var executiveResult = await ExecuteExecutiveInsightAsync(userText, r.Reason, ct);
+
+            swTotal.Stop();
+            Console.WriteLine($"[PIPELINE] done agent={executiveResult.RoutedAgent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
+
+            return executiveResult;
         }
 
         // ----------------------------
@@ -388,6 +404,266 @@ USER REQUEST:
         Console.WriteLine($"[PIPELINE] done agent={call.AgentName} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
 
         return await MaybeAttachDecisionCandidateAsync(userText, checkedAnswer, call.AgentName, r.Reason, ct);
+    }
+
+
+    private async Task<PipelineResult> ExecuteExecutiveInsightAsync(
+        string userText,
+        string routerReason,
+        CancellationToken ct)
+    {
+        var supportPrompt = BuildExecutiveSupportDataPrompt(userText);
+
+        var support = await _caller.CallAgentAsync(
+            ChatAgentFactory.DataExplorerAgentName,
+            supportPrompt,
+            cancellationToken: ct);
+
+        var supportText = (support.Text ?? string.Empty).Trim();
+
+        if (LooksLikeClarifyingQuestion(supportText))
+        {
+            Console.WriteLine("[EXECUTIVE_RETRY] DataExplorer returned a question. Retrying with stricter enforcement.");
+
+            var retryPrompt = BuildExecutiveSupportDataPrompt(userText, stricter: true);
+
+            support = await _caller.CallAgentAsync(
+                ChatAgentFactory.DataExplorerAgentName,
+                retryPrompt,
+                cancellationToken: ct);
+
+            supportText = (support.Text ?? string.Empty).Trim();
+        }
+
+        var finalSupportText = PrepareExecutiveSupportPayload(userText, supportText);
+
+        var executivePrompt = BuildExecutiveSynthesisPrompt(userText, finalSupportText);
+
+        var executive = await _caller.CallAgentAsync(
+            ExecutiveInsightAgentName,
+            executivePrompt,
+            cancellationToken: ct);
+
+        var executiveText = (executive.Text ?? string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(executiveText))
+        {
+            executiveText = "Executive Summary\nI couldn’t generate a grounded executive summary from the available data.\n\nKey Insights\n• No supporting data was returned from the database.\n\nRisks\n• Leadership decisions may be delayed without supporting metrics.\n\nOpportunities\n• Run a more specific business-performance query to gather supporting facts.\n\nRecommended Actions\n• Ask for a focused executive summary such as sales by territory, revenue trend, or headcount by department.";
+        }
+
+        var checkedAnswer = await RunPpiSafeAsync(userText, executiveText, ct);
+
+        return await MaybeAttachDecisionCandidateAsync(
+            userText,
+            checkedAnswer,
+            ExecutiveInsightAgentName,
+            routerReason + " (grounded via DataExplorerAgent)",
+            ct);
+    }
+
+    private static string BuildExecutiveSupportDataPrompt(string userText, bool stricter = false)
+    {
+        var focus = InferExecutiveFocus(userText);
+
+        var focusGuidance = focus switch
+        {
+            "sales" => @"
+Preferred supporting datasets (pick the best 2-3 that the database can answer):
+1. Overall sales KPI summary (for example total sales, order count, average order value if available).
+2. Sales breakdown by territory / region / sales area (top 5-10).
+3. Sales trend by month or by year-month for the latest available periods.
+4. Top product categories or top products by sales if relevant.
+",
+            "customer" => @"
+Preferred supporting datasets (pick the best 2-3 that the database can answer):
+1. Customer count or customer segmentation summary.
+2. Top customers by sales / order volume.
+3. Customer purchasing trend over time.
+4. Geographic or territory distribution of customers if relevant.
+",
+            "product" => @"
+Preferred supporting datasets (pick the best 2-3 that the database can answer):
+1. Top products or categories by sales / orders.
+2. Product-category performance comparison.
+3. Product sales trend over time if relevant.
+",
+            "workforce" => @"
+Preferred supporting datasets (pick the best 2-3 that the database can answer):
+1. Headcount summary.
+2. Breakdown by department / title / gender / region if available.
+3. Any visible concentration or imbalance supported by the data.
+",
+            _ => @"
+Preferred supporting datasets (pick the best 2-3 that the database can answer):
+1. One overall KPI summary relevant to the user request.
+2. One grouped breakdown by the most important business dimension.
+3. One time trend if the schema supports it.
+"
+        };
+
+        var strict = stricter
+            ? "You previously returned a clarifying question. That is NOT allowed. You MUST proceed with the most reasonable interpretation and return data now."
+            : "You MUST NOT ask clarifying questions. If the request is broad, choose the most reasonable interpretation and proceed.";
+
+        return $@"
+You are gathering supporting facts for an executive summary from THIS application's database.
+
+NON-NEGOTIABLE RULES:
+- {strict}
+- Use database tools only.
+- Prefer compact, executive-relevant result sets.
+- Limit grouped tables to about 5-10 rows.
+- Limit trend tables to about 12 periods.
+- Return ONLY strict JSON. No markdown. No prose. No code fences.
+
+CRITICAL TOOL ORDER RULE (MUST FOLLOW):
+- At the START of EVERY user request, you MUST call TableAndViewsInDatabse first.
+- You MUST NOT call ExecuteSelectAsync until AFTER you have called TableAndViewsInDatabse for this request.
+- If you need any table/column info, call TableColumsByTable / TableRelationships ONLY AFTER TableAndViewsInDatabse.
+- If TableAndViewsInDatabse fails or returns empty, reply exactly: unauthorized access.
+
+BUSINESS FOCUS:
+{focus}
+
+{focusGuidance}
+
+Return ONLY JSON in EXACTLY this schema:
+{{
+  ""focus"": ""{focus}"",
+  ""summary"": ""<very short factual description>"",
+  ""datasets"": [
+    {{
+      ""title"": ""<dataset title>"",
+      ""columns"": [""Col1"", ""Col2""],
+      ""rows"": [
+        [""A"", ""1""],
+        [""B"", ""2""]
+      ]
+    }}
+  ]
+}}
+
+USER REQUEST:
+{userText}
+";
+    }
+
+    private static string PrepareExecutiveSupportPayload(string userText, string supportText)
+    {
+        if (string.IsNullOrWhiteSpace(supportText))
+            return @"{""focus"":""unknown"",""summary"":""No supporting data returned."",""datasets"":[]}";
+
+        var trimmed = supportText.Trim();
+
+        if (string.Equals(trimmed, "unauthorized access", StringComparison.OrdinalIgnoreCase))
+            return @"{""focus"":""unknown"",""summary"":""Database access was not authorized."",""datasets"":[]}";
+
+        var json = ExtractFirstJsonObject(trimmed);
+        if (!string.IsNullOrWhiteSpace(json))
+            return TruncateForExecutiveInput(json);
+
+        if (LooksLikeJson(trimmed))
+            return TruncateForExecutiveInput(trimmed);
+
+        if (TryRenderRowsObjectTableMarkdown(trimmed, out var mdFromRows))
+        {
+            return JsonSerializer.Serialize(new
+            {
+                focus = InferExecutiveFocus(userText),
+                summary = "Supporting data returned as SQL rows.",
+                datasets = new[]
+                {
+                    new
+                    {
+                        title = "SQL result",
+                        columns = Array.Empty<string>(),
+                        rows = Array.Empty<string[]>(),
+                        markdown = mdFromRows
+                    }
+                }
+            });
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            focus = InferExecutiveFocus(userText),
+            summary = "Supporting data returned in text form.",
+            datasets = new[]
+            {
+                new
+                {
+                    title = "Supporting result",
+                    text = TruncateForExecutiveInput(trimmed)
+                }
+            }
+        });
+    }
+
+    private static string BuildExecutiveSynthesisPrompt(string userText, string supportJson)
+    {
+        return $@"
+Create a leadership-ready executive summary using ONLY the supporting data below.
+
+Requirements:
+- Be grounded in the data only.
+- Do NOT invent numbers, trends, causes, or KPIs.
+- If a cause is only a plausible interpretation, phrase it cautiously using terms like 'may' or 'could'.
+- If the data is limited, say so clearly.
+- Keep the tone concise, executive, and decision-oriented.
+
+Use EXACTLY this structure:
+
+Executive Summary
+<2-3 sentence summary>
+
+Key Insights
+• Insight 1
+• Insight 2
+• Insight 3
+
+Risks
+• Risk 1
+• Risk 2
+
+Opportunities
+• Opportunity 1
+• Opportunity 2
+
+Recommended Actions
+• Action 1
+• Action 2
+
+Original user request:
+{userText}
+
+Supporting data:
+{supportJson}
+";
+    }
+
+    private static string InferExecutiveFocus(string? userText)
+    {
+        var t = (userText ?? string.Empty).ToLowerInvariant();
+
+        if (t.Contains("customer"))
+            return "customer";
+
+        if (t.Contains("product") || t.Contains("category") || t.Contains("inventory"))
+            return "product";
+
+        if (t.Contains("employee") || t.Contains("headcount") || t.Contains("workforce") || t.Contains("department") || t.Contains("staff"))
+            return "workforce";
+
+        if (t.Contains("sales") || t.Contains("revenue") || t.Contains("order") || t.Contains("territory"))
+            return "sales";
+
+        return "business";
+    }
+
+    private static string TruncateForExecutiveInput(string text, int maxChars = 12000)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return text;
+        return text.Length <= maxChars ? text : text[..maxChars];
     }
 
     // ✅ Decision hook: attach candidate (no text mutation)
