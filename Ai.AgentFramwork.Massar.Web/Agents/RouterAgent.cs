@@ -72,6 +72,15 @@ public sealed class RouterAgent
                 Reason: "Hard-guard: anomaly detection request detected.");
         }
 
+        // Hard guard: segmentation / grouped breakdown intent
+        if (IsSegmentationIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.DataSegmentationAgentName,
+                Reason: "Hard-guard: segmentation request detected.");
+        }
+
         // Hard guard: "what is included / what does it say" doc questions
         if (IsDocumentContentQuestion(userMessage))
         {
@@ -231,6 +240,9 @@ User message:
 
             if (IsAnomalyDetectionIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.AnomalyDetectionAgentName, "Hard-guard: anomaly detection request detected.");
+
+            if (IsSegmentationIntent(userMessage))
+                return new RouteResult("agent", ChatAgentFactory.DataSegmentationAgentName, "Hard-guard: segmentation request detected.");
 
             if (IsDocumentContentQuestion(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.DocumentSearchAgentName, "Hard-guard: document content question detected.");
@@ -431,6 +443,52 @@ User message:
             t.Contains("headcount") || t.Contains("employee") || t.Contains("performance");
 
         return mentionsAnomaly && (businessMetric || t.Contains("trend") || t.Contains("time series") || t.Contains("metric"));
+    }
+
+    private static bool IsSegmentationIntent(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        if (IsExcelAnalyticsIntent(text) || IsForecastingIntent(text) || IsAnomalyDetectionIntent(text) || IsExecutiveInsightIntent(text))
+            return false;
+
+        var t = text.ToLowerInvariant();
+
+        var businessMetric =
+            t.Contains("sales") || t.Contains("revenue") || t.Contains("order") || t.Contains("orders") ||
+            t.Contains("profit") || t.Contains("margin") || t.Contains("cost") || t.Contains("expense") ||
+            t.Contains("employee") || t.Contains("employees") || t.Contains("headcount") || t.Contains("customer") ||
+            t.Contains("customers") || t.Contains("invoice") || t.Contains("invoices") || t.Contains("amount") ||
+            t.Contains("count") || t.Contains("total");
+
+        var groupingPhrase =
+            t.Contains("segment") ||
+            t.Contains("segmentation") ||
+            t.Contains("breakdown") ||
+            t.Contains("split") ||
+            t.Contains("group by") ||
+            t.Contains("grouped by") ||
+            t.Contains("bucket") ||
+            t.Contains("classify") ||
+            t.Contains("by region") ||
+            t.Contains("by department") ||
+            t.Contains("by category") ||
+            t.Contains("by territory") ||
+            t.Contains("by country") ||
+            t.Contains("by city") ||
+            t.Contains("by customer") ||
+            t.Contains("by product") ||
+            t.Contains("by channel") ||
+            t.Contains("by segment") ||
+            t.Contains("by type") ||
+            t.Contains("top ") ||
+            t.Contains("bottom ") ||
+            t.Contains("rank") ||
+            t.Contains("contribution") ||
+            t.Contains("share of") ||
+            t.Contains("share by");
+
+        return businessMetric && groupingPhrase;
     }
 
     private static bool IsExecutiveInsightIntent(string text)
