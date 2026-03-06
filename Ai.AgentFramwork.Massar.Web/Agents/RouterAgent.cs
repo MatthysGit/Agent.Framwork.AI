@@ -81,6 +81,15 @@ public sealed class RouterAgent
                 Reason: "Hard-guard: segmentation request detected.");
         }
 
+        // Hard guard: what-if simulation / scenario analysis intent
+        if (IsWhatIfSimulationIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.WhatIfSimulationAgentName,
+                Reason: "Hard-guard: what-if simulation request detected.");
+        }
+
         // Hard guard: "what is included / what does it say" doc questions
         if (IsDocumentContentQuestion(userMessage))
         {
@@ -150,6 +159,14 @@ A3) EXECUTIVE INSIGHT INTENT:
 A4) FORECASTING / PREDICTIVE ANALYTICS INTENT:
 - If the user asks to forecast, predict, project forward, estimate future values, or generate baseline / optimistic / conservative scenarios,
   choose agent \"{{{ChatAgentFactory.ForecastingAgentName}}}\".
+
+A5) WHAT-IF / SCENARIO SIMULATION INTENT:
+- If the user asks what happens if a business variable changes, simulate impact, or run a what-if scenario,
+  choose agent \"{{{ChatAgentFactory.WhatIfSimulationAgentName}}}\".
+- Examples:
+  - \"What happens if we increase prices by 10%?\"
+  - \"Simulate a 5% reduction in cost by department\"
+  - \"What if headcount grows 8% next year?\"
 - Examples:
   - \"Forecast monthly sales for the next 6 months\"
   - \"Predict revenue by region next quarter\"
@@ -243,6 +260,9 @@ User message:
 
             if (IsSegmentationIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.DataSegmentationAgentName, "Hard-guard: segmentation request detected.");
+
+            if (IsWhatIfSimulationIntent(userMessage))
+                return new RouteResult("agent", ChatAgentFactory.WhatIfSimulationAgentName, "Hard-guard: what-if simulation request detected.");
 
             if (IsDocumentContentQuestion(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.DocumentSearchAgentName, "Hard-guard: document content question detected.");
@@ -491,6 +511,44 @@ User message:
         return businessMetric && groupingPhrase;
     }
 
+
+
+    private static bool IsWhatIfSimulationIntent(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        if (IsExcelAnalyticsIntent(text) || IsForecastingIntent(text) || IsAnomalyDetectionIntent(text) || IsSegmentationIntent(text))
+            return false;
+
+        var t = text.ToLowerInvariant();
+
+        var scenarioTerms =
+            t.Contains("what if") ||
+            t.Contains("what-if") ||
+            t.Contains("simulate") ||
+            t.Contains("simulation") ||
+            t.Contains("scenario analysis") ||
+            t.Contains("impact of") ||
+            t.Contains("effect of");
+
+        var changeTerms =
+            t.Contains("increase") ||
+            t.Contains("decrease") ||
+            t.Contains("reduce") ||
+            t.Contains("drop") ||
+            t.Contains("raise") ||
+            t.Contains("grow") ||
+            t.Contains("boost") ||
+            t.Contains("%");
+
+        var businessTerms =
+            t.Contains("price") || t.Contains("discount") || t.Contains("cost") || t.Contains("expense") ||
+            t.Contains("margin") || t.Contains("profit") || t.Contains("revenue") || t.Contains("sales") ||
+            t.Contains("volume") || t.Contains("demand") || t.Contains("headcount") || t.Contains("employee") ||
+            t.Contains("staff") || t.Contains("orders");
+
+        return (scenarioTerms && changeTerms) || (changeTerms && businessTerms && (t.Contains("what happens") || t.Contains("impact")));
+    }
     private static bool IsExecutiveInsightIntent(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
