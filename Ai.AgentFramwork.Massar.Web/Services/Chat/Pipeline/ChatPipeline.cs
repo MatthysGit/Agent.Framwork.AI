@@ -9,6 +9,8 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Ai.AgentFramwork.Massar.Web.Services.Anomaly;
 using Ai.AgentFramwork.Massar.Web.Services.Anomaly.Modelss;
+using Ai.AgentFramwork.Massar.Web.Services.WhatIfs;
+using Ai.AgentFramwork.Massar.Web.Services.WhatIfs.Modelss;
 
 namespace Ai.AgentFramwork.Massar.Web.Services.Chat.Pipeline;
 
@@ -177,6 +179,16 @@ public sealed class ChatPipeline
             Console.WriteLine($"[PIPELINE] done agent={segmentationResult.RoutedAgent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
 
             return segmentationResult;
+        }
+
+        if (string.Equals(r.Agent, ChatAgentFactory.WhatIfSimulationAgentName, StringComparison.OrdinalIgnoreCase))
+        {
+            var whatIfResult = await ExecuteWhatIfSimulationAsync(userText, r.Reason, ct);
+
+            swTotal.Stop();
+            Console.WriteLine($"[PIPELINE] done agent={whatIfResult.RoutedAgent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
+
+            return whatIfResult;
         }
 
         // ----------------------------
@@ -1278,6 +1290,207 @@ USER REQUEST:
         });
     }
 
+
+
+
+    private async Task<PipelineResult> ExecuteWhatIfSimulationAsync(
+        string userText,
+        string routerReason,
+        CancellationToken ct)
+    {
+        var request = WhatIfSimulationService.ParseRequest(userText);
+        var supportPrompt = BuildWhatIfSupportDataPrompt(userText, request);
+
+        var support = await _caller.CallAgentAsync(
+            ChatAgentFactory.SqlAgentName,
+            supportPrompt,
+            cancellationToken: ct);
+
+        var supportText = (support.Text ?? string.Empty).Trim();
+
+        if (LooksLikeClarifyingQuestion(supportText))
+        {
+            var retryPrompt = BuildWhatIfSupportDataPrompt(userText, request, stricter: true);
+
+            support = await _caller.CallAgentAsync(
+                ChatAgentFactory.SqlAgentName,
+                retryPrompt,
+                cancellationToken: ct);
+
+            supportText = (support.Text ?? string.Empty).Trim();
+        }
+
+        if (!WhatIfSimulationService.TryParseInputPoints(supportText, out var inputPoints))
+        {
+            var failText = "I couldn't run the what-if simulation because the supporting query did not return a usable baseline dataset. Please ask for a simulation on a numeric metric such as sales, revenue, cost, profit, orders, or headcount.";
+            return await MaybeAttachDecisionCandidateAsync(userText, failText, ChatAgentFactory.WhatIfSimulationAgentName, routerReason, ct);
+        }
+
+        var simulation = WhatIfSimulationService.Run(request, inputPoints);
+        var markdown = WhatIfSimulationService.BuildMarkdown(simulation);
+
+        try
+        {
+            var chartUrl = await CreateWhatIfChartAsync(simulation);
+            markdown = $"![chart]({chartUrl})\n\n" + markdown;
+            markdown += WrapHiddenToolPayload("chart_result", JsonSerializer.Serialize(new { type = "chart_url", url = chartUrl }));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("[WHATIF_CHART_FALLBACK] " + ex);
+        }
+
+        markdown += WrapHiddenToolPayload("whatif_result", WhatIfSimulationService.BuildHiddenPayload(simulation));
+
+        var checkedAnswer = await RunPpiSafeAsync(userText, markdown, ct);
+
+        return await MaybeAttachDecisionCandidateAsync(
+            userText,
+            checkedAnswer,
+            ChatAgentFactory.WhatIfSimulationAgentName,
+            routerReason + " (grounded via SqlAgent)",
+            ct);
+    }
+
+    private static string BuildWhatIfSupportDataPrompt(string userText, WhatIfRequest request, bool stricter = false)
+    {
+        var strict = stricter
+            ? "- You previously asked a question. That is NOT allowed. Choose the most reasonable interpretation and proceed."
+            : "- Do NOT ask follow-up questions. Choose the most reasonable interpretation and proceed.";
+
+        var groupingLine = string.IsNullOrWhiteSpace(request.GroupBy)
+            ? "- Prefer a baseline time series if the schema supports it. Otherwise return the most relevant grouped baseline."
+            : $"- If possible, group the returned baseline by '{request.GroupBy}' or the closest matching business dimension.";
+
+        return $@"
+You are the SQL agent for baseline what-if simulation support data.
+
+NON-NEGOTIABLE RULES:
+{strict}
+- Use database tools only.
+- Return a baseline dataset that can be used for deterministic what-if simulation.
+- Prefer a single numeric metric and one clear label/dimension.
+{groupingLine}
+- Include enough rows to make the simulation meaningful, typically 8-24 rows for time series or 5-15 rows for grouped results.
+
+CRITICAL TOOL ORDER RULE (MUST FOLLOW):
+- At the START of EVERY user request, you MUST call TableAndViewsInDatabse first.
+- You MUST NOT call ExecuteSelectAsync until AFTER you have called TableAndViewsInDatabse for this request.
+- If you need any table/column info, call TableColumsByTable / TableRelationships ONLY AFTER TableAndViewsInDatabse.
+- If TableAndViewsInDatabse fails or returns empty, reply exactly: unauthorized access.
+
+MANDATORY OUTPUT RULES:
+- Return ONLY the JSON returned by ExecuteSelectAsync.
+- No markdown, no prose, no wrapping.
+- The returned rows MUST include:
+  - Label: the baseline bucket label (for example month, territory, department, category, or other grouping label)
+  - Value: the numeric baseline measure
+  - Series: optional secondary grouping label if useful
+- If exact aliases are not possible, still return one label-like column and one numeric measure column.
+- Order the rows logically (time ascending when time-like, otherwise by relevance).
+
+USER REQUEST:
+{userText}
+
+SIMULATION CONTEXT:
+- Target metric: {request.MetricName}
+- Changed variable: {request.VariableName}
+- Scenario: {request.ScenarioName}
+";
+    }
+
+    private async Task<string> CreateWhatIfChartAsync(WhatIfSimulationResult result)
+    {
+        var points = result.Points
+            .OrderBy(p => p.Series ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(p => p.SortDate ?? DateTime.MaxValue)
+            .ThenBy(p => p.Label, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (points.Count == 0)
+            throw new InvalidOperationException("No simulation rows available for chart.");
+
+        if (result.Grouped)
+        {
+            var groups = points
+                .GroupBy(p => p.Series ?? "Overall", StringComparer.OrdinalIgnoreCase)
+                .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+                .Take(6)
+                .ToList();
+
+            var labels = points
+                .Where(p => string.Equals(p.Series ?? "Overall", groups[0].Key, StringComparison.OrdinalIgnoreCase))
+                .Select(p => p.Label)
+                .ToArray();
+
+            var seriesNames = new List<string>();
+            var seriesValues = new List<double[]>();
+
+            foreach (var g in groups)
+            {
+                var values = labels
+                    .Select(label => g.FirstOrDefault(p => string.Equals(p.Label, label, StringComparison.OrdinalIgnoreCase))?.ScenarioValue ?? 0d)
+                    .ToArray();
+
+                if (values.Any(v => v != 0d))
+                {
+                    seriesNames.Add(g.Key);
+                    seriesValues.Add(values);
+                }
+            }
+
+            if (result.TimeSeriesLike)
+            {
+                return await _chartTools.CreateMultiSeriesLineChartPngAsync(
+                    result.Title,
+                    "Label",
+                    result.MetricLabel,
+                    labels,
+                    seriesNames.ToArray(),
+                    seriesValues.ToArray(),
+                    width: 1000,
+                    height: 600);
+            }
+
+            return await _chartTools.CreateMultiSeriesColumnChartPngAsync(
+                result.Title,
+                "Label",
+                result.MetricLabel,
+                labels,
+                seriesNames.ToArray(),
+                seriesValues.ToArray(),
+                width: 1000,
+                height: 600);
+        }
+
+        var top = result.TimeSeriesLike
+            ? points
+            : points.OrderByDescending(p => Math.Abs(p.DeltaValue)).Take(12).ToList();
+
+        var xLabels = top.Select(p => p.Label).ToArray();
+        var scenarioValues = top.Select(p => p.ScenarioValue).ToArray();
+
+        if (result.TimeSeriesLike)
+        {
+            return await _chartTools.CreateLineChartPngAsync(
+                result.Title,
+                "Label",
+                result.MetricLabel,
+                xLabels,
+                scenarioValues,
+                width: 1000,
+                height: 600);
+        }
+
+        return await _chartTools.CreateBarChartPngAsync(
+            result.Title,
+            "Label",
+            result.MetricLabel,
+            xLabels,
+            scenarioValues,
+            width: 1000,
+            height: 600);
+    }
 
     private static string BuildExecutiveSupportDataPrompt(string userText, bool stricter = false)
     {
