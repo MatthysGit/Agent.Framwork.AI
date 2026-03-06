@@ -9,6 +9,7 @@ namespace Ai.AgentFramwork.Massar.Web.Agents;
 #pragma warning disable OPENAI001
 public sealed class RouterAgent
 {
+    
     private readonly ChatClient _chat;
     private readonly Func<IReadOnlyList<Microsoft.Extensions.AI.ChatMessage>> _historyProvider;
 
@@ -17,8 +18,6 @@ public sealed class RouterAgent
         _chat = chat;
         _historyProvider = historyProvider;
     }
-
-    
 
     public sealed record RouteResult(
             string Mode,      // "agent" | "chart"
@@ -44,6 +43,15 @@ public sealed class RouterAgent
                 Mode: "agent",
                 Agent: ChatAgentFactory.ExcelAnalyticsAgentName,
                 Reason: "Hard-guard: spreadsheet analytics intent detected.");
+        }
+
+        // Hard guard: executive / leadership summary intent
+        if (IsExecutiveInsightIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.ExecutiveInsightAgentName,
+                Reason: "Hard-guard: executive insight request detected.");
         }
 
         // Hard guard: "what is included / what does it say" doc questions
@@ -76,6 +84,7 @@ Schema (return exactly this shape):
         | \"{{{ChatAgentFactory.DocumentSearchAgentName}}}\" 
         | \"{{{ChatAgentFactory.DocumentEditAgentName}}}\"
         | \"{{{ChatAgentFactory.ExcelAnalyticsAgentName}}}\"
+        | \"{{{ChatAgentFactory.ExecutiveInsightAgentName}}}\"
         | \"{{{ChatAgentFactory.LlmChatAgentName}}}\",
   \"reason\": \"<short reason>\",
   \"chartType\": \"column\"|\"bar\"|\"pie\"|\"line\"|\"area\"|\"donut\"|\"gauge\"|\"progress\"|\"multicolumn\"|null
@@ -98,7 +107,19 @@ A2) EXCEL / SPREADSHEET ANALYTICS INTENT (HIGH PRIORITY, ONLY IF NOT EDITING):
   - \"Find top categories and a trend chart\"
   - \"Summarize sales performance and plot revenue over time\"
 
-B) DOCUMENT SEARCH / LOOKUP INTENT (ONLY IF NOT EDITING OR EXCEL ANALYTICS):
+A3) EXECUTIVE INSIGHT INTENT:
+- If the user asks for executive summary, leadership summary, management summary, business overview,
+  performance summary, top insights, key insights, what matters most, risks and opportunities,
+  board summary, strategic insights, or an executive-level summary of performance,
+  choose agent \"{{{ChatAgentFactory.ExecutiveInsightAgentName}}}\".
+- Prefer this route when the user wants leadership-ready interpretation rather than raw data rows.
+- Examples:
+  - \"Give me an executive summary of company performance this month\"
+  - \"What are the top insights leadership should know?\"
+  - \"Summarize the business risks and opportunities\"
+  - \"What matters most for management this week?\"
+
+B) DOCUMENT SEARCH / LOOKUP INTENT (ONLY IF NOT EDITING OR EXCEL ANALYTICS OR EXECUTIVE INSIGHT):
 - If the user's message OR recent chat context indicates they want information contained in a document (policy/contract/agreement/kit),
   you MUST choose agent \"{{{ChatAgentFactory.DocumentSearchAgentName}}}\".
   This includes questions like:
@@ -121,14 +142,14 @@ CHART RULE:
   mode=\"chart\", agent=\"{{{ChatAgentFactory.SqlAgentName}}}\", chartType best fit.
 
 SQL RULE:
-- If clearly SQL/database (not chart) => agent "{{{ChatAgentFactory.DataExplorerAgentName}}}".
+- If clearly SQL/database (not chart) => agent \"{{{ChatAgentFactory.DataExplorerAgentName}}}\".
 
 SQL / DATA EXPLORATION INTENT KEYWORDS (ROUTE TO DataExplorer):
 - If the user asks for: count / how many / number of / total / sum / avg / average / min / max
 - Or asks for: breakdown / grouped by / per / by <dimension>
 - Or mentions database/query/select/sql/table/view
 - Or asks about business metrics like: employees, headcount, sales, revenue, orders, invoices, territories
-=> choose agent "{{{ChatAgentFactory.DataExplorerAgentName}}}" (mode="agent" unless chart requested).
+=> choose agent \"{{{ChatAgentFactory.DataExplorerAgentName}}}\" (mode=\"agent\" unless chart requested).
 
 FALLBACK:
 - Otherwise => agent \"{{{ChatAgentFactory.LlmChatAgentName}}}\".
@@ -175,6 +196,9 @@ User message:
             if (IsExcelAnalyticsIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.ExcelAnalyticsAgentName, "Hard-guard: spreadsheet analytics intent detected.");
 
+            if (IsExecutiveInsightIntent(userMessage))
+                return new RouteResult("agent", ChatAgentFactory.ExecutiveInsightAgentName, "Hard-guard: executive insight request detected.");
+
             if (IsDocumentContentQuestion(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.DocumentSearchAgentName, "Hard-guard: document content question detected.");
 
@@ -190,8 +214,8 @@ User message:
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
 
-        // ✅ Important: do NOT treat spreadsheet analytics as document-search
-        if (IsExcelAnalyticsIntent(text))
+        // Important: do NOT treat spreadsheet analytics or executive-summary requests as document-search
+        if (IsExcelAnalyticsIntent(text) || IsExecutiveInsightIntent(text))
             return false;
 
         var t = text.ToLowerInvariant();
@@ -224,7 +248,7 @@ User message:
             t.Contains("survival kit") ||
             t.Contains("kit");
 
-        // Links / attachment markers (keep, but excel analytics is excluded above)
+        // Links / attachment markers (keep, but spreadsheet analytics and executive summaries are excluded above)
         var hasLinkMarkers =
             t.Contains("/api/chat/attachments/") ||
             t.Contains("/documents/files/download/");
@@ -311,5 +335,29 @@ User message:
             return true;
 
         return false;
+    }
+
+    private static bool IsExecutiveInsightIntent(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        var t = text.ToLowerInvariant();
+
+        return t.Contains("executive summary")
+               || t.Contains("leadership summary")
+               || t.Contains("management summary")
+               || t.Contains("business overview")
+               || t.Contains("performance summary")
+               || t.Contains("top insights")
+               || t.Contains("key insights")
+               || t.Contains("what matters most")
+               || t.Contains("risks and opportunities")
+               || t.Contains("board summary")
+               || t.Contains("strategic insights")
+               || t.Contains("executive-level summary")
+               || t.Contains("summary for leadership")
+               || t.Contains("summary for management")
+               || t.Contains("leadership should know")
+               || t.Contains("management should know");
     }
 }
