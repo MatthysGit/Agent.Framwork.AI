@@ -1,11 +1,12 @@
-﻿using System.Text;
-using System.Text.Json;
-using System.Text.RegularExpressions;
-using System.Linq;
-using Ai.AgentFramwork.Massar.Web.Agents;
+﻿using Ai.AgentFramwork.Massar.Web.Agents;
 using Ai.AgentFramwork.Massar.Web.Services.Chat;
 using Ai.AgentFramwork.Massar.Web.Services.Chat.DecisionTracking;
+using Ai.AgentFramwork.Massar.Web.Services.Forecasting;
 using Ai.AgentFramwork.Massar.Web.Tools;
+using System.Linq;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Ai.AgentFramwork.Massar.Web.Services.Chat.Pipeline;
 
@@ -30,6 +31,7 @@ public sealed class ChatPipeline
     private readonly Func<string?>? _getOwnerUserId;
 
     private const string ExecutiveInsightAgentName = "ExecutiveInsightAgent";
+    private const string ForecastingAgentName = "ForecastingAgent";
 
     public ChatPipeline(
         RouterAgent router,
@@ -142,6 +144,16 @@ public sealed class ChatPipeline
             Console.WriteLine($"[PIPELINE] done agent={executiveResult.RoutedAgent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
 
             return executiveResult;
+        }
+
+        if (string.Equals(r.Agent, ForecastingAgentName, StringComparison.OrdinalIgnoreCase))
+        {
+            var forecastResult = await ExecuteForecastAsync(userText, r.Reason, ct);
+
+            swTotal.Stop();
+            Console.WriteLine($"[PIPELINE] done agent={forecastResult.RoutedAgent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
+
+            return forecastResult;
         }
 
         // ----------------------------
@@ -460,6 +472,283 @@ USER REQUEST:
             routerReason + " (grounded via DataExplorerAgent)",
             ct);
     }
+
+
+    private async Task<PipelineResult> ExecuteForecastAsync(
+        string userText,
+        string routerReason,
+        CancellationToken ct)
+    {
+        var request = ForecastingService.ParseRequest(userText);
+
+        var historicalPrompt = BuildForecastSupportDataPrompt(userText, request);
+
+        var support = await _caller.CallAgentAsync(
+            ChatAgentFactory.DataExplorerAgentName,
+            historicalPrompt,
+            cancellationToken: ct);
+
+        var supportText = (support.Text ?? string.Empty).Trim();
+
+        if (LooksLikeClarifyingQuestion(supportText))
+        {
+            var retryPrompt = BuildForecastSupportDataPrompt(userText, request, stricter: true);
+
+            support = await _caller.CallAgentAsync(
+                ChatAgentFactory.DataExplorerAgentName,
+                retryPrompt,
+                cancellationToken: ct);
+
+            supportText = (support.Text ?? string.Empty).Trim();
+        }
+
+        if (!TryParseForecastInputPoints(supportText, out var inputPoints))
+        {
+            var failText = "I couldn't generate a forecast because the supporting query did not return a usable time series. Please ask for a forecast with a date-based metric such as monthly sales, revenue, or orders.";
+            return await MaybeAttachDecisionCandidateAsync(userText, failText, ForecastingAgentName, routerReason, ct);
+        }
+
+        var forecast = ForecastingService.GenerateForecast(request, inputPoints);
+        var markdown = BuildForecastMarkdown(forecast);
+
+        try
+        {
+            var chartUrl = await CreateForecastChartAsync(forecast);
+            markdown = $"![chart]({chartUrl})\n\n" + markdown;
+            markdown += WrapHiddenToolPayload("chart_result", JsonSerializer.Serialize(new { type = "chart_url", url = chartUrl }));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("[FORECAST_CHART_FALLBACK] " + ex);
+        }
+
+        markdown += WrapHiddenToolPayload("forecast_result", BuildForecastHiddenPayload(forecast));
+
+        var checkedAnswer = await RunPpiSafeAsync(userText, markdown, ct);
+
+        return await MaybeAttachDecisionCandidateAsync(
+            userText,
+            checkedAnswer,
+            ForecastingAgentName,
+            routerReason + " (grounded via DataExplorerAgent)",
+            ct);
+    }
+
+    private static string BuildForecastSupportDataPrompt(string userText, ForecastRequest request, bool stricter = false)
+    {
+        var seriesLine = request.GroupBy is null
+            ? "- Return rows with EXACT columns: Period, Value."
+            : $"- Return rows with EXACT columns: Period, Value, Series. Series MUST contain the grouping label for '{request.GroupBy}'.";
+
+        var stricterLine = stricter
+            ? "- You previously asked a question. That is NOT allowed. Choose the most reasonable interpretation and proceed."
+            : "- Do NOT ask follow-up questions. Choose the most reasonable interpretation and proceed.";
+
+        return $@"
+You are the SQL data exploration agent for forecasting support data.
+
+{stricterLine}
+
+CRITICAL TOOL ORDER RULE (MUST FOLLOW):
+- At the START of EVERY user request, you MUST call TableAndViewsInDatabse first.
+- You MUST NOT call ExecuteSelectAsync until AFTER you have called TableAndViewsInDatabse for this request.
+- If you need any table/column info, call TableColumsByTable / TableRelationships ONLY AFTER TableAndViewsInDatabse.
+- If TableAndViewsInDatabse fails or returns empty, reply exactly: unauthorized access.
+
+MANDATORY OUTPUT RULES:
+- Return ONLY the JSON returned by ExecuteSelectAsync.
+- No markdown, no prose, no wrapping.
+- Aggregate the data into a time series suitable for forecasting.
+- Bucket by {request.Grain.ToString().ToLowerInvariant()}.
+- Return historical data ordered by Period ascending.
+{seriesLine}
+- Period MUST be a date-like bucket label or ISO date string.
+- Value MUST be numeric.
+- Include enough history to support forecasting, preferably the last {request.HistoryPeriods} periods.
+
+USER REQUEST:
+{userText}
+";
+    }
+
+    private static bool TryParseForecastInputPoints(string text, out List<ForecastInputPoint> points)
+    {
+        points = new List<ForecastInputPoint>();
+        var json = ExtractFirstJsonObject(text) ?? (LooksLikeJson(text) ? text : null);
+        if (string.IsNullOrWhiteSpace(json))
+            return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!TryGetPropIgnoreCase(doc.RootElement, "rows", out var rowsEl) || rowsEl.ValueKind != JsonValueKind.Array)
+                return false;
+
+            foreach (var row in rowsEl.EnumerateArray())
+            {
+                if (row.ValueKind != JsonValueKind.Object)
+                    continue;
+
+                if (!TryGetPropIgnoreCase(row, "Period", out var periodEl))
+                    continue;
+                if (!TryGetPropIgnoreCase(row, "Value", out var valueEl))
+                    continue;
+
+                var periodText = periodEl.ValueKind == JsonValueKind.String ? (periodEl.GetString() ?? "") : periodEl.ToString();
+                if (!DateTime.TryParse(periodText, out var period))
+                    continue;
+
+                double value;
+                if (valueEl.ValueKind == JsonValueKind.Number && valueEl.TryGetDouble(out var numeric))
+                    value = numeric;
+                else if (valueEl.ValueKind == JsonValueKind.String && double.TryParse(valueEl.GetString(), out var parsed))
+                    value = parsed;
+                else
+                    continue;
+
+                string? series = null;
+                if (TryGetPropIgnoreCase(row, "Series", out var seriesEl))
+                    series = seriesEl.ValueKind == JsonValueKind.String ? seriesEl.GetString() : seriesEl.ToString();
+
+                points.Add(new ForecastInputPoint(period, value, string.IsNullOrWhiteSpace(series) ? null : series));
+            }
+
+            return points.Count > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string BuildForecastMarkdown(ForecastResult forecast)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Forecast Summary");
+        sb.AppendLine(forecast.Summary);
+        sb.AppendLine();
+
+        if (forecast.Assumptions.Count > 0)
+        {
+            sb.AppendLine("Assumptions");
+            foreach (var item in forecast.Assumptions)
+                sb.AppendLine($"• {item}");
+            sb.AppendLine();
+        }
+
+        var topRows = forecast.Points
+            .OrderBy(p => p.Series ?? "")
+            .ThenBy(p => p.Period)
+            .Take(60)
+            .ToList();
+
+        sb.AppendLine("| Series | Period | Type | Value | Lower | Upper | Scenario |");
+        sb.AppendLine("| --- | --- | --- | ---: | ---: | ---: | --- |");
+        foreach (var p in topRows)
+        {
+            sb.AppendLine($"| {EscapeMd(p.Series ?? "Overall")} | {p.Period:yyyy-MM-dd} | {(p.IsForecast ? "Forecast" : "History")} | {p.Value:0.##} | {(p.LowerBound.HasValue ? p.LowerBound.Value.ToString("0.##") : "")} | {(p.UpperBound.HasValue ? p.UpperBound.Value.ToString("0.##") : "")} | {EscapeMd(p.Scenario ?? "")} |");
+        }
+
+        if (forecast.Points.Count > topRows.Count)
+            sb.AppendLine($"\nShowing first {topRows.Count} rows of {forecast.Points.Count} total forecast rows.");
+
+        return sb.ToString().Trim();
+    }
+
+    private async Task<string> CreateForecastChartAsync(ForecastResult forecast)
+    {
+        var forecastOnly = forecast.Points.Where(p => p.IsForecast).ToList();
+        var history = forecast.Points.Where(p => !p.IsForecast).ToList();
+
+        var allPeriods = forecast.Points.Select(p => p.Period).Distinct().OrderBy(d => d).ToList();
+        var labels = allPeriods.Select(d => d.ToString("yyyy-MM-dd")).ToArray();
+
+        if (forecast.Grouped)
+        {
+            var chosenSeries = forecast.Points
+                .Select(p => p.Series ?? "Overall")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(6)
+                .ToList();
+
+            var seriesNames = new List<string>();
+            var seriesValues = new List<double[]>();
+
+            foreach (var s in chosenSeries)
+            {
+                var values = allPeriods
+                    .Select(period =>
+                    {
+                        var point = forecastOnly.FirstOrDefault(p => string.Equals(p.Series ?? "Overall", s, StringComparison.OrdinalIgnoreCase) && p.Period == period);
+                        return point?.Value ?? double.NaN;
+                    })
+                    .Select(v => double.IsNaN(v) ? 0d : v)
+                    .ToArray();
+
+                if (values.Any(v => v != 0d))
+                {
+                    seriesNames.Add(s);
+                    seriesValues.Add(values);
+                }
+            }
+
+            if (seriesNames.Count == 0)
+                throw new InvalidOperationException("No forecast series available for chart.");
+
+            return await _chartTools.CreateMultiSeriesLineChartPngAsync(
+                forecast.Title,
+                "Period",
+                yAxisLabel: "Value",
+                xLabels: labels,
+                seriesNames: seriesNames.ToArray(),
+                seriesValues: seriesValues.ToArray(),
+                width: 1000,
+                height: 600);
+        }
+        else
+        {
+            var values = allPeriods
+                .Select(period =>
+                {
+                    var hist = history.FirstOrDefault(p => p.Period == period && string.Equals(p.Scenario, "Baseline", StringComparison.OrdinalIgnoreCase));
+                    if (hist is not null) return hist.Value;
+                    var f = forecastOnly.FirstOrDefault(p => p.Period == period && string.Equals(p.Scenario, "Baseline", StringComparison.OrdinalIgnoreCase));
+                    return f?.Value ?? 0d;
+                })
+                .ToArray();
+
+            return await _chartTools.CreateLineChartPngAsync(
+                forecast.Title,
+                "Period",
+                "Value",
+                labels,
+                values,
+                width: 1000,
+                height: 600);
+        }
+    }
+
+    private static string BuildForecastHiddenPayload(ForecastResult forecast)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            type = "forecast_result",
+            title = forecast.Title,
+            summary = forecast.Summary,
+            grouped = forecast.Grouped,
+            points = forecast.Points.Select(p => new
+            {
+                period = p.Period,
+                series = p.Series,
+                value = p.Value,
+                lowerBound = p.LowerBound,
+                upperBound = p.UpperBound,
+                isForecast = p.IsForecast,
+                scenario = p.Scenario
+            }).ToList()
+        });
+    }
+
 
     private static string BuildExecutiveSupportDataPrompt(string userText, bool stricter = false)
     {

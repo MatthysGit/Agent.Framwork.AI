@@ -9,7 +9,7 @@ namespace Ai.AgentFramwork.Massar.Web.Agents;
 #pragma warning disable OPENAI001
 public sealed class RouterAgent
 {
-    
+
     private readonly ChatClient _chat;
     private readonly Func<IReadOnlyList<Microsoft.Extensions.AI.ChatMessage>> _historyProvider;
 
@@ -54,6 +54,15 @@ public sealed class RouterAgent
                 Reason: "Hard-guard: executive insight request detected.");
         }
 
+        // Hard guard: forecasting / predictive analytics intent
+        if (IsForecastingIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.ForecastingAgentName,
+                Reason: "Hard-guard: forecasting request detected.");
+        }
+
         // Hard guard: "what is included / what does it say" doc questions
         if (IsDocumentContentQuestion(userMessage))
         {
@@ -85,6 +94,7 @@ Schema (return exactly this shape):
         | \"{{{ChatAgentFactory.DocumentEditAgentName}}}\"
         | \"{{{ChatAgentFactory.ExcelAnalyticsAgentName}}}\"
         | \"{{{ChatAgentFactory.ExecutiveInsightAgentName}}}\"
+        | \"{{{ChatAgentFactory.ForecastingAgentName}}}\"
         | \"{{{ChatAgentFactory.LlmChatAgentName}}}\",
   \"reason\": \"<short reason>\",
   \"chartType\": \"column\"|\"bar\"|\"pie\"|\"line\"|\"area\"|\"donut\"|\"gauge\"|\"progress\"|\"multicolumn\"|null
@@ -118,6 +128,14 @@ A3) EXECUTIVE INSIGHT INTENT:
   - \"What are the top insights leadership should know?\"
   - \"Summarize the business risks and opportunities\"
   - \"What matters most for management this week?\"
+
+A4) FORECASTING / PREDICTIVE ANALYTICS INTENT:
+- If the user asks to forecast, predict, project forward, estimate future values, or generate baseline / optimistic / conservative scenarios,
+  choose agent \"{{{ChatAgentFactory.ForecastingAgentName}}}\".
+- Examples:
+  - \"Forecast monthly sales for the next 6 months\"
+  - \"Predict revenue by region next quarter\"
+  - \"Project orders for the next 12 months\"
 
 B) DOCUMENT SEARCH / LOOKUP INTENT (ONLY IF NOT EDITING OR EXCEL ANALYTICS OR EXECUTIVE INSIGHT):
 - If the user's message OR recent chat context indicates they want information contained in a document (policy/contract/agreement/kit),
@@ -198,6 +216,9 @@ User message:
 
             if (IsExecutiveInsightIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.ExecutiveInsightAgentName, "Hard-guard: executive insight request detected.");
+
+            if (IsForecastingIntent(userMessage))
+                return new RouteResult("agent", ChatAgentFactory.ForecastingAgentName, "Hard-guard: forecasting request detected.");
 
             if (IsDocumentContentQuestion(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.DocumentSearchAgentName, "Hard-guard: document content question detected.");
@@ -335,6 +356,38 @@ User message:
             return true;
 
         return false;
+    }
+
+    private static bool IsForecastingIntent(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        if (IsExcelAnalyticsIntent(text))
+            return false;
+
+        var t = text.ToLowerInvariant();
+
+        var mentionsForecast =
+            t.Contains("forecast") ||
+            t.Contains("predict") ||
+            t.Contains("projection") ||
+            t.Contains("project ") ||
+            t.Contains("projected") ||
+            t.Contains("predictive") ||
+            t.Contains("expected ") ||
+            t.Contains("outlook") ||
+            t.Contains("scenario");
+
+        var mentionsFutureWindow =
+            t.Contains("next month") || t.Contains("next quarter") || t.Contains("next year") ||
+            t.Contains("next 3") || t.Contains("next 6") || t.Contains("next 12") ||
+            t.Contains("future") || t.Contains("upcoming");
+
+        var businessMetric =
+            t.Contains("sales") || t.Contains("revenue") || t.Contains("order") || t.Contains("demand") ||
+            t.Contains("volume") || t.Contains("cost") || t.Contains("margin") || t.Contains("profit");
+
+        return mentionsForecast || (mentionsFutureWindow && businessMetric);
     }
 
     private static bool IsExecutiveInsightIntent(string text)
