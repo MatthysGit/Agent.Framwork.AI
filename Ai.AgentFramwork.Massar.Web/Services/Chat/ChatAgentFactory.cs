@@ -27,10 +27,11 @@ public sealed class ChatAgentFactory
     public const string ExcelAnalyticsAgentName = "ExcelAnalyticsAgent";
     public const string DataExplorerAgentName = "DataExplorerAgent";
     public const string ExecutiveInsightAgentName = "ExecutiveInsightAgent";
-    
+    public const string ForecastingAgentName = "ForecastingAgent";
+
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
     private readonly IConfiguration _configuration;
-    private readonly IAgentRegistry _registry;  
+    private readonly IAgentRegistry _registry;
 
     // ✅ runtime model + client creation
     private readonly IChatClientFactory _chatClientFactory;
@@ -102,7 +103,10 @@ public sealed class ChatAgentFactory
 
         _registry.Register(ExecutiveInsightAgentName, (sp, chatClient) =>
             new ExecutiveInsightAgent().Build(chatClient, ExecutiveInsightAgentName));
-        
+
+        _registry.Register(ForecastingAgentName, (sp, chatClient) =>
+            new ForecastingAgent().Build(chatClient, ForecastingAgentName));
+
 
         // ✅ Caller chooses model at runtime per agent
         var caller = new AgentCallerTool(

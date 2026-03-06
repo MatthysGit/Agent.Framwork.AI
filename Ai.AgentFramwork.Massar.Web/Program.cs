@@ -1,6 +1,8 @@
 using Ai.AgentFramwork.Massar.Web.Agents;
 using Ai.AgentFramwork.Massar.Web.Components;
 using Ai.AgentFramwork.Massar.Web.DBModels;
+using Ai.AgentFramwork.Massar.Web.DTO; // ✅ SendEmailRequest DTO lives here now
+using Ai.AgentFramwork.Massar.Web.DTO;
 using Ai.AgentFramwork.Massar.Web.Models;
 using Ai.AgentFramwork.Massar.Web.Services;
 using Ai.AgentFramwork.Massar.Web.Services.Admin;
@@ -10,6 +12,9 @@ using Ai.AgentFramwork.Massar.Web.Services.Chat.charts;
 using Ai.AgentFramwork.Massar.Web.Services.Chat.DecisionTracking;
 using Ai.AgentFramwork.Massar.Web.Services.Documents;
 using Ai.AgentFramwork.Massar.Web.Services.DocumentSeach;
+using Ai.AgentFramwork.Massar.Web.Services.Email;
+using Ai.AgentFramwork.Massar.Web.Services.ExcelServices;
+using Ai.AgentFramwork.Massar.Web.Services.Forecasting;
 using Ai.AgentFramwork.Massar.Web.Services.Ingestion;
 using Ai.AgentFramwork.Massar.Web.Services.SchemaIntrospection;
 using Ai.AgentFramwork.Massar.Web.Services.Security;
@@ -31,11 +36,7 @@ using OpenAI;
 using OpenAI.Chat;
 using System.Security.Claims;
 using System.Security.Principal;
-using Ai.AgentFramwork.Massar.Web.Services.Email;
-using Ai.AgentFramwork.Massar.Web.DTO; // ✅ SendEmailRequest DTO lives here now
 using static Ai.AgentFramwork.Massar.Web.DTO.LoginRequestDTO;
-using Ai.AgentFramwork.Massar.Web.DTO;
-using Ai.AgentFramwork.Massar.Web.Services.ExcelServices;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
@@ -181,6 +182,9 @@ builder.Services.AddHttpClient<IOffice365EmailService, Office365EmailService>();
 builder.Services.AddKeyedSingleton("ingestion_directory",
     new DirectoryInfo(Path.Combine(builder.Environment.WebRootPath, "Data")));
 
+
+//ForecastRequest
+builder.Services.AddScoped<ForecastRequest>();
 
 // Excel analytics pipeline
 builder.Services.AddScoped<ISpreadsheetTableExtractor, SpreadsheetTableExtractor>();
