@@ -27,6 +27,7 @@ public sealed class ChatAgentFactory
     public const string ExcelAnalyticsAgentName = "ExcelAnalyticsAgent";
     public const string DataExplorerAgentName = "DataExplorerAgent";
     public const string ExecutiveInsightAgentName = "ExecutiveInsightAgent";
+    public const string DataIntelligenceAgentName = "DataIntelligenceAgent";
     public const string ForecastingAgentName = "ForecastingAgent";
     public const string AnomalyDetectionAgentName = "AnomalyDetectionAgent";
     public const string DataSegmentationAgentName = "DataSegmentationAgent";
@@ -106,6 +107,9 @@ public sealed class ChatAgentFactory
 
         _registry.Register(ExecutiveInsightAgentName, (sp, chatClient) =>
             new ExecutiveInsightAgent().Build(chatClient, ExecutiveInsightAgentName));
+
+        _registry.Register(DataIntelligenceAgentName, (sp, chatClient) =>
+            new DataIntelligenceAgent().Build(chatClient, DataIntelligenceAgentName));
 
         _registry.Register(ForecastingAgentName, (sp, chatClient) =>
             new ForecastingAgent().Build(chatClient, ForecastingAgentName));

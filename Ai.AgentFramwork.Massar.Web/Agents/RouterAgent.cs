@@ -54,6 +54,15 @@ public sealed class RouterAgent
                 Reason: "Hard-guard: executive insight request detected.");
         }
 
+        // Hard guard: data intelligence / analytical interpretation intent
+        if (IsDataIntelligenceIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.DataIntelligenceAgentName,
+                Reason: "Hard-guard: data intelligence request detected.");
+        }
+
         // Hard guard: forecasting / predictive analytics intent
         if (IsForecastingIntent(userMessage))
         {
@@ -121,6 +130,7 @@ Schema (return exactly this shape):
         | \"{{{ChatAgentFactory.DocumentEditAgentName}}}\"
         | \"{{{ChatAgentFactory.ExcelAnalyticsAgentName}}}\"
         | \"{{{ChatAgentFactory.ExecutiveInsightAgentName}}}\"
+        | \"{{{ChatAgentFactory.DataIntelligenceAgentName}}}\"
         | \"{{{ChatAgentFactory.ForecastingAgentName}}}\"
         | \"{{{ChatAgentFactory.LlmChatAgentName}}}\",
   \"reason\": \"<short reason>\",
@@ -280,7 +290,7 @@ User message:
         if (string.IsNullOrWhiteSpace(text)) return false;
 
         // Important: do NOT treat spreadsheet analytics or executive-summary requests as document-search
-        if (IsExcelAnalyticsIntent(text) || IsExecutiveInsightIntent(text))
+        if (IsExcelAnalyticsIntent(text) || IsExecutiveInsightIntent(text) || IsDataIntelligenceIntent(text))
             return false;
 
         var t = text.ToLowerInvariant();
@@ -469,7 +479,7 @@ User message:
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
 
-        if (IsExcelAnalyticsIntent(text) || IsForecastingIntent(text) || IsAnomalyDetectionIntent(text) || IsExecutiveInsightIntent(text))
+        if (IsExcelAnalyticsIntent(text) || IsForecastingIntent(text) || IsAnomalyDetectionIntent(text) || IsExecutiveInsightIntent(text) || IsDataIntelligenceIntent(text))
             return false;
 
         var t = text.ToLowerInvariant();
@@ -549,6 +559,31 @@ User message:
 
         return (scenarioTerms && changeTerms) || (changeTerms && businessTerms && (t.Contains("what happens") || t.Contains("impact")));
     }
+    private static bool IsDataIntelligenceIntent(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        if (IsExcelAnalyticsIntent(text) || IsExecutiveInsightIntent(text))
+            return false;
+
+        var t = text.ToLowerInvariant();
+
+        return t.Contains("data intelligence")
+               || t.Contains("business intelligence summary")
+               || t.Contains("what does the data suggest")
+               || t.Contains("what do the data suggest")
+               || t.Contains("analytical interpretation")
+               || t.Contains("analyze the signals")
+               || t.Contains("key signals")
+               || t.Contains("patterns in the data")
+               || t.Contains("drivers of performance")
+               || t.Contains("business signals")
+               || t.Contains("intelligence view")
+               || t.Contains("intelligence analysis")
+               || (t.Contains("what does") && t.Contains("data suggest"))
+               || (t.Contains("what do") && t.Contains("data suggest"));
+    }
+
     private static bool IsExecutiveInsightIntent(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;

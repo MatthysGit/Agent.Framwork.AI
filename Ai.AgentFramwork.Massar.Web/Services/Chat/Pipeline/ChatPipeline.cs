@@ -151,6 +151,16 @@ public sealed class ChatPipeline
             return executiveResult;
         }
 
+        if (string.Equals(r.Agent, ChatAgentFactory.DataIntelligenceAgentName, StringComparison.OrdinalIgnoreCase))
+        {
+            var dataIntelligenceResult = await ExecuteDataIntelligenceAsync(userText, r.Reason, ct);
+
+            swTotal.Stop();
+            Console.WriteLine($"[PIPELINE] done agent={dataIntelligenceResult.RoutedAgent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
+
+            return dataIntelligenceResult;
+        }
+
         if (string.Equals(r.Agent, ChatAgentFactory.ForecastingAgentName, StringComparison.OrdinalIgnoreCase))
         {
             var forecastResult = await ExecuteForecastAsync(userText, r.Reason, ct);
@@ -453,6 +463,79 @@ USER REQUEST:
         return await MaybeAttachDecisionCandidateAsync(userText, checkedAnswer, call.AgentName, r.Reason, ct);
     }
 
+
+    private async Task<PipelineResult> ExecuteDataIntelligenceAsync(
+        string userText,
+        string routerReason,
+        CancellationToken ct)
+    {
+        var supportPrompt = BuildDataIntelligenceSupportDataPrompt(userText);
+
+        var support = await _caller.CallAgentAsync(
+            ChatAgentFactory.DataExplorerAgentName,
+            supportPrompt,
+            cancellationToken: ct);
+
+        var supportText = (support.Text ?? string.Empty).Trim();
+
+        if (LooksLikeClarifyingQuestion(supportText))
+        {
+            Console.WriteLine("[DATA_INTELLIGENCE_RETRY] DataExplorer returned a question. Retrying with stricter enforcement.");
+
+            var retryPrompt = BuildDataIntelligenceSupportDataPrompt(userText, stricter: true);
+
+            support = await _caller.CallAgentAsync(
+                ChatAgentFactory.DataExplorerAgentName,
+                retryPrompt,
+                cancellationToken: ct);
+
+            supportText = (support.Text ?? string.Empty).Trim();
+        }
+
+        var finalSupportText = PrepareDataIntelligenceSupportPayload(userText, supportText);
+
+        var synthesisPrompt = BuildDataIntelligenceSynthesisPrompt(userText, finalSupportText);
+
+        var intelligence = await _caller.CallAgentAsync(
+            ChatAgentFactory.DataIntelligenceAgentName,
+            synthesisPrompt,
+            cancellationToken: ct);
+
+        var intelligenceText = (intelligence.Text ?? string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(intelligenceText))
+        {
+            intelligenceText =
+                "## Data Intelligence Summary\n" +
+                "I couldn’t produce a grounded data intelligence analysis from the available data.\n\n" +
+                "## What the data suggests\n" +
+                "- No reliable support payload was returned from the database.\n\n" +
+                "## Key signals / patterns\n" +
+                "- There was not enough structured evidence to identify meaningful patterns.\n\n" +
+                "## Risks or watchouts\n" +
+                "- Decisions based on incomplete data may be misleading.\n\n" +
+                "## Recommended actions\n" +
+                "- Ask for a more targeted analytical request such as sales by region, revenue by month, margin by category, or orders by status.";
+        }
+
+        intelligenceText += WrapHiddenToolPayload(
+            "data_intelligence_result",
+            JsonSerializer.Serialize(new
+            {
+                type = "data_intelligence",
+                question = userText,
+                supportPayload = finalSupportText
+            }));
+
+        var checkedAnswer = await RunPpiSafeAsync(userText, intelligenceText, ct);
+
+        return await MaybeAttachDecisionCandidateAsync(
+            userText,
+            checkedAnswer,
+            ChatAgentFactory.DataIntelligenceAgentName,
+            routerReason + " (grounded via DataExplorerAgent)",
+            ct);
+    }
 
     private async Task<PipelineResult> ExecuteExecutiveInsightAsync(
         string userText,
@@ -1490,6 +1573,134 @@ SIMULATION CONTEXT:
             scenarioValues,
             width: 1000,
             height: 600);
+    }
+
+    private static string BuildDataIntelligenceSupportDataPrompt(string userText, bool stricter = false)
+    {
+        var strict = stricter
+            ? "- You previously asked a question. That is NOT allowed. Choose the most reasonable interpretation and proceed."
+            : "- Do NOT ask follow-up questions. Choose the most reasonable interpretation and proceed.";
+
+        return $@"
+You are the SQL data exploration agent for analytical support data.
+
+NON-NEGOTIABLE RULES:
+{strict}
+- Use database tools only.
+- Return the most relevant grounded dataset for the user's analysis request.
+- Prefer compact, high-signal output over broad dumps.
+- Choose the most business-relevant dimensions and metrics.
+- When possible, return grouped or trend-oriented results that support interpretation.
+- Limit output to a practical size unless the user explicitly asks for full detail.
+
+CRITICAL TOOL ORDER RULE (MUST FOLLOW):
+- At the START of EVERY user request, you MUST call TableAndViewsInDatabse first.
+- You MUST NOT call ExecuteSelectAsync until AFTER you have called TableAndViewsInDatabse for this request.
+- If you need any table/column info, call TableColumsByTable / TableRelationships ONLY AFTER TableAndViewsInDatabse.
+- If TableAndViewsInDatabse fails or returns empty, reply exactly: unauthorized access.
+
+OUTPUT RULE (MANDATORY):
+- You MUST return ONLY the JSON returned by ExecuteSelectAsync (SqlServerSelectTool).
+- No markdown, no prose, no extra keys, no wrapping.
+
+USER REQUEST:
+{userText}
+";
+    }
+
+    private static string PrepareDataIntelligenceSupportPayload(string userText, string supportText)
+    {
+        if (string.IsNullOrWhiteSpace(supportText))
+        {
+            return $$"""
+            {
+              "userRequest": {{JsonSerializer.Serialize(userText)}},
+              "status": "no_support_data",
+              "supportData": null
+            }
+            """;
+        }
+
+        var trimmed = supportText.Trim();
+
+        if (string.Equals(trimmed, "unauthorized access", StringComparison.OrdinalIgnoreCase))
+        {
+            return $$"""
+            {
+              "userRequest": {{JsonSerializer.Serialize(userText)}},
+              "status": "unauthorized",
+              "supportData": null
+            }
+            """;
+        }
+
+        var json = ExtractFirstJsonObject(trimmed);
+        if (!string.IsNullOrWhiteSpace(json))
+        {
+            return $$"""
+            {
+              "userRequest": {{JsonSerializer.Serialize(userText)}},
+              "status": "ok",
+              "supportData": {{json}}
+            }
+            """;
+        }
+
+        if (LooksLikeJson(trimmed))
+        {
+            return $$"""
+            {
+              "userRequest": {{JsonSerializer.Serialize(userText)}},
+              "status": "ok",
+              "supportData": {{trimmed}}
+            }
+            """;
+        }
+
+        return $$"""
+        {
+          "userRequest": {{JsonSerializer.Serialize(userText)}},
+          "status": "unstructured_support",
+          "supportText": {{JsonSerializer.Serialize(supportText)}}
+        }
+        """;
+    }
+
+    private static string BuildDataIntelligenceSynthesisPrompt(string userText, string supportPayload)
+    {
+        return $@"
+You are producing a grounded data intelligence analysis.
+
+Your task:
+- Interpret the support payload.
+- Explain the most meaningful signals in business terms.
+- Highlight concentration, mix, change, ranking, imbalance, volatility, or operational concerns if present.
+- Be explicit about uncertainty when the payload is narrow or incomplete.
+- Do not invent calculations that are not directly supported.
+
+Required markdown structure:
+
+## Data Intelligence Summary
+A concise summary of what matters most.
+
+## What the data suggests
+2-4 bullets.
+
+## Key signals / patterns
+2-5 bullets.
+
+## Risks or watchouts
+2-4 bullets.
+
+## Recommended actions
+2-4 bullets.
+
+User request:
+{userText}
+
+Support payload:
+{supportPayload}
+";
     }
 
     private static string BuildExecutiveSupportDataPrompt(string userText, bool stricter = false)
