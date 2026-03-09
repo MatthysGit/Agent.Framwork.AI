@@ -6,18 +6,18 @@ using System.ComponentModel;
 using System.Data;
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Ai.AgentFramwork.Massar.Web.Tools;
 
 public sealed class SqlServerSelectTool
 {
-    private  string _connectionString;
+    private string _connectionString;
     private readonly IConfiguration _configuration;
     private readonly AuthenticationStateProvider _auth;
 
-    public  SqlServerSelectTool(IConfiguration configuration, AuthenticationStateProvider auth)
+    public SqlServerSelectTool(IConfiguration configuration, AuthenticationStateProvider auth)
     {
-
         _configuration = configuration;
         _connectionString = _configuration["ConnectionStrings:AppDb"] ?? "";
         _auth = auth;
@@ -25,10 +25,6 @@ public sealed class SqlServerSelectTool
 
     public async Task<int> GetMyGroupIdsAsync()
     {
-
-        
-        
-
         int _roleId = 0;
 
         var state = await _auth.GetAuthenticationStateAsync();
@@ -36,29 +32,10 @@ public sealed class SqlServerSelectTool
 
         var roleClaim = user.FindFirst("RoleId");
 
-        foreach (var claim in user.Claims)
-        {
-            Console.WriteLine($"{claim.Type} = {claim.Value}");
-        }
-
-        
-
         if (roleClaim != null && int.TryParse(roleClaim.Value, out var rid))
-        {
             _roleId = rid;
-        }
 
         return _roleId;
-
-
-        //if (user?.Identity?.IsAuthenticated != true)
-        //  return Array.Empty<int>();
-
-        //return user.FindAll(AppClaimTypes.SecurityGroupId)
-        //    .Select(c => int.TryParse(c.Value, out var v) ? v : (int?)null)
-        //    .Where(v => v.HasValue)
-        //    .Select(v => v!.Value)
-        //    .ToArray();
     }
 
     public async Task<string?> GetMyUserIdAsync()
@@ -67,19 +44,17 @@ public sealed class SqlServerSelectTool
         return state.User.FindFirstValue(AppClaimTypes.UserId);
     }
 
-
-    [Description("Executes a SELECT-only SQL Server query and returns rows as JSON. Parameters must be provided separately.")]
+    [Description("Executes a SELECT-only SQL Server query and returns rows as JSON.")]
     public async Task<string> ExecuteSelectAsync(
-        [Description("A SELECT-only query (optionally starting with WITH for CTEs). No semicolons; single statement only.")]
         string sql,
-        [Description("Named parameters. Keys should match parameter names without '@'.")]
         Dictionary<string, object?>? parameters = null,
-        [Description("Max rows returned (defensive cap).")]
         int maxRows = 200,
-        [Description("Command timeout in seconds.")]
         int timeoutSeconds = 30)
     {
-         ValidateSelectOnly(sql);
+        ValidateSelectOnly(sql);
+
+        // PATCH: fix SELECT column syntax
+        sql = PatchSelectFields(sql);
 
         await using var conn = new SqlConnection(_connectionString);
         await conn.OpenAsync();
@@ -91,8 +66,10 @@ public sealed class SqlServerSelectTool
         };
 
         if (parameters is not null)
+        {
             foreach (var (name, value) in parameters)
                 cmd.Parameters.AddWithValue("@" + name, value ?? DBNull.Value);
+        }
 
         await using var reader = await cmd.ExecuteReaderAsync(CommandBehavior.SequentialAccess);
 
@@ -102,29 +79,92 @@ public sealed class SqlServerSelectTool
         while (await reader.ReadAsync())
         {
             totalRead++;
-            if (rows.Count >= maxRows) continue;
+
+            if (rows.Count >= maxRows)
+                continue;
 
             var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+
             for (int i = 0; i < reader.FieldCount; i++)
                 row[reader.GetName(i)] = await reader.IsDBNullAsync(i) ? null : reader.GetValue(i);
 
             rows.Add(row);
         }
-        
-        var x = JsonSerializer.Serialize(new { rowCount = rows.Count, truncated = totalRead > maxRows, rows });
 
-        return JsonSerializer.Serialize(new { rowCount = rows.Count, truncated = totalRead > maxRows, rows });
+        return JsonSerializer.Serialize(new
+        {
+            rowCount = rows.Count,
+            truncated = totalRead > maxRows,
+            rows
+        });
+    }
+
+    private static string PatchSelectFields(string sql)
+    {
+        var match = Regex.Match(sql,
+            @"SELECT\s+(.*?)\s+FROM",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        if (!match.Success)
+            return sql;
+
+        var selectPart = match.Groups[1].Value;
+
+        var columns = selectPart.Split(',');
+
+        for (int i = 0; i < columns.Length; i++)
+        {
+            var col = columns[i].Trim();
+
+            // Skip expressions
+            if (col.Contains("(") || col.Contains(")") || col.Contains("CASE", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            // Skip already bracketed
+            if (col.Contains("["))
+                continue;
+
+            // Match alias.column
+            var dotMatch = Regex.Match(col, @"(\w+)\.(\w+)");
+
+            if (dotMatch.Success)
+            {
+                var alias = dotMatch.Groups[1].Value;
+                var field = dotMatch.Groups[2].Value;
+
+                col = Regex.Replace(col,
+                    @"(\w+)\.(\w+)",
+                    $"{alias}.[{field}]");
+            }
+            else
+            {
+                // plain column
+                col = Regex.Replace(col,
+                    @"^\w+$",
+                    m => $"[{m.Value}]");
+            }
+
+            columns[i] = col;
+        }
+
+        var patched = string.Join(", ", columns);
+
+        return Regex.Replace(sql,
+            @"SELECT\s+(.*?)\s+FROM",
+            $"SELECT {patched} FROM",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
     }
 
     public static void ValidateSelectOnly(string sql)
     {
-        if (string.IsNullOrWhiteSpace(sql)) throw new ArgumentException("SQL is required.");
+        if (string.IsNullOrWhiteSpace(sql))
+            throw new ArgumentException("SQL is required.");
+
         var s = sql.Trim();
-        //if (s.Contains(';')) throw new ArgumentException("Semicolons are not allowed (single SELECT only).");
 
         if (!(s.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase) ||
               s.StartsWith("WITH", StringComparison.OrdinalIgnoreCase)))
-            throw new ArgumentException("Only SELECT queries are allowed (CTEs starting with WITH are allowed).");
+            throw new ArgumentException("Only SELECT queries are allowed.");
 
         string[] blocked =
         {
@@ -134,90 +174,69 @@ public sealed class SqlServerSelectTool
         };
 
         foreach (var token in blocked)
+        {
             if (s.Contains(token, StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException($"Blocked keyword detected: {token}.");
+        }
     }
 
-
-    [Description("Gets the tables and view avalible in the databse that can be used in ExecuteSelectAsync")]
-    public async Task<List<TableDef>> TableAndViewsInDatabse() 
+    [Description("Gets tables and views available in the database")]
+    public async Task<List<TableDef>> TableAndViewsInDatabse()
     {
         int secGroup = await GetMyGroupIdsAsync();
+        List<TableDef> tables = new();
 
-        List<TableDef> tables = new List<TableDef>();
+        using var connection = new SqlConnection(_configuration["ConnectionStrings:AI_DB"] ?? "");
+        connection.Open();
 
-        using (var connection = new SqlConnection(_configuration["ConnectionStrings:AI_DB"] ?? ""))
-        {
-            connection.Open();
-            using (SqlCommand cmd = connection.CreateCommand())
-            {
-                cmd.CommandType = System.Data.CommandType.StoredProcedure;
-                cmd.CommandText = "GetAITables";
-                cmd.Parameters.AddWithValue("@SecGroup", secGroup); // variable holding value
+        using SqlCommand cmd = connection.CreateCommand();
+        cmd.CommandType = CommandType.StoredProcedure;
+        cmd.CommandText = "GetAITables";
+        cmd.Parameters.AddWithValue("@SecGroup", secGroup);
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
-                {
-                    tables = reader.MapToList<TableDef>();
-                }
-            }
-            connection.Close();
-        }
+        using SqlDataReader reader = cmd.ExecuteReader();
+        tables = reader.MapToList<TableDef>();
 
-        return tables;   
+        return tables;
     }
 
-    [Description("Gets the table colums definitions for a table, column_name, data_type and definition")]
+    [Description("Gets column definitions for a table")]
     public async Task<List<TableColumnDef>> TableColumsByTable(string table_name)
     {
-        List<TableColumnDef> columns = new List<TableColumnDef>();
+        List<TableColumnDef> columns = new();
         int secGroup = await GetMyGroupIdsAsync();
 
-        using (var connection = new SqlConnection(_configuration["ConnectionStrings:AI_DB"] ?? ""))
-        {
-            connection.Open();
-            using (SqlCommand cmd = connection.CreateCommand())
-            {
-                cmd.CommandType = System.Data.CommandType.StoredProcedure;
-                cmd.CommandText = "GetAITaleColumnsByTableName";
-                cmd.Parameters.AddWithValue("@table", table_name);
-                cmd.Parameters.AddWithValue("@SecGroup", secGroup);
+        using var connection = new SqlConnection(_configuration["ConnectionStrings:AI_DB"] ?? "");
+        connection.Open();
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
-                {
-                    columns = reader.MapToList<TableColumnDef>();
-                }
-            }
-            connection.Close();
-        }
+        using SqlCommand cmd = connection.CreateCommand();
+        cmd.CommandType = CommandType.StoredProcedure;
+        cmd.CommandText = "GetAITaleColumnsByTableName";
+        cmd.Parameters.AddWithValue("@table", table_name);
+        cmd.Parameters.AddWithValue("@SecGroup", secGroup);
+
+        using SqlDataReader reader = cmd.ExecuteReader();
+        columns = reader.MapToList<TableColumnDef>();
 
         return columns;
     }
 
-
-    [Description("TableRelationships to understand the relationships between tables")]
+    [Description("Returns table relationships")]
     public async Task<List<TableColumnDef>> TableRelationships(string table_name)
     {
-        List<TableColumnDef> columns = new List<TableColumnDef>();
+        List<TableColumnDef> columns = new();
 
-        using (var connection = new SqlConnection(_configuration["ConnectionStrings:AI_DB"] ?? ""))
-        {
-            connection.Open();
-            using (SqlCommand cmd = connection.CreateCommand())
-            {
-                cmd.CommandType = System.Data.CommandType.StoredProcedure;
-                cmd.CommandText = "GetAITablesReferencing";
-                cmd.Parameters.AddWithValue("@table", table_name); // variable holding value
+        using var connection = new SqlConnection(_configuration["ConnectionStrings:AI_DB"] ?? "");
+        connection.Open();
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
-                {
-                    columns = reader.MapToList<TableColumnDef>();
-                }
-            }
-            connection.Close();
-        }
+        using SqlCommand cmd = connection.CreateCommand();
+        cmd.CommandType = CommandType.StoredProcedure;
+        cmd.CommandText = "GetAITablesReferencing";
+        cmd.Parameters.AddWithValue("@table", table_name);
+
+        using SqlDataReader reader = cmd.ExecuteReader();
+        columns = reader.MapToList<TableColumnDef>();
 
         return columns;
     }
-
-
 }
