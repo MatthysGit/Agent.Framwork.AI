@@ -312,24 +312,23 @@ app.MapGet("/api/auth/cookies", (HttpContext ctx) =>
 
 app.MapGet("/api/chat/attachments/{id:guid}", async (
     Guid id,
-    IDbContextFactory<AppDbContext> dbFactory) =>
+    IDbContextFactory<AppDbContext> dbFactory,
+    CancellationToken ct) =>
 {
-    await using var db = await dbFactory.CreateDbContextAsync();
+    await using var db = await dbFactory.CreateDbContextAsync(ct);
 
-    var blob = await db.Set<ChatAttachmentBlob>()
-        .Where(b => b.AttachmentId == id)
-        .Select(b => new
-        {
-            b.FileName,
-            b.ContentType,
-            b.FileContent
-        })
-        .FirstOrDefaultAsync();
+    var blob = await db.ChatAttachmentBlobs
+        .Where(x => x.AttachmentId == id)
+        .FirstOrDefaultAsync(ct);
 
-    if (blob is null)
+    if (blob == null)
         return Results.NotFound();
 
-    return Results.File(blob.FileContent, blob.ContentType ?? "application/octet-stream");
+    return Results.File(
+        blob.FileContent,
+        blob.ContentType ?? "application/octet-stream",
+        fileDownloadName: Path.GetFileName(blob.FileName)
+    );
 });
 
 app.MapGet("/documents/files/download/{documentFileId:guid}", async (
