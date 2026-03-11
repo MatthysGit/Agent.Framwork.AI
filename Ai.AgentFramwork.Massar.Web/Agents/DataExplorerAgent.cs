@@ -91,6 +91,9 @@ FOLLOW-UPS:
 
         var tools = new[]
         {
+            AIFunctionFactory.Create(sqlTool.TableAndViewsInDatabse),
+            AIFunctionFactory.Create(sqlTool.TableColumsByTable),
+            AIFunctionFactory.Create(sqlTool.TableRelationships),
             AIFunctionFactory.Create(sqlTool.ExecuteSelectAsync),
         };
         

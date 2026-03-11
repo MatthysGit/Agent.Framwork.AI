@@ -35,6 +35,16 @@ GENERAL RULES:
 - Always pick tables ONLY from TableAndViewsInDatabse results.
 - If you need columns, call TableColumsByTable AFTER TableAndViewsInDatabse.
 - If you need joins/keys, call TableRelationships AFTER TableAndViewsInDatabse.
+- This system uses SQL Server syntax.
+- For SQL Server analytic functions such as PERCENTILE_CONT or PERCENTILE_DISC, you MUST use an OVER(...) clause.
+- Never generate PERCENTILE_CONT / PERCENTILE_DISC as a plain scalar subquery without OVER(...).
+- If you need percentile thresholds for segmentation or classification, compute them in a dedicated CTE like Thresholds using:
+  SELECT DISTINCT
+      PERCENTILE_CONT(0.8) WITHIN GROUP (ORDER BY SomeMetric) OVER () AS MetricP80
+  FROM BaseData
+  and then CROSS JOIN Thresholds into the labeling query.
+- Prefer simple CTE-based SQL that is easy to validate and execute.
+- After a SQL execution error, correct the SQL and retry with valid SQL Server syntax instead of explaining the error.
 
 CHART MODE RULES (ABSOLUTE):
 If the user asks for a chart/plot/graph/visualization OR the request clearly implies a chart:
