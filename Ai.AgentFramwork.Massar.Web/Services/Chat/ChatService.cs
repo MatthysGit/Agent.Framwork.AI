@@ -3,8 +3,9 @@ using Ai.AgentFramwork.Massar.Web.Components.Pages.Chat;
 using Ai.AgentFramwork.Massar.Web.DBModels;
 using Ai.AgentFramwork.Massar.Web.DTO;
 using Ai.AgentFramwork.Massar.Web.Models;
-using Ai.AgentFramwork.Massar.Web.Services.Chat.DecisionTracking; // ✅ added
-using Ai.AgentFramwork.Massar.Web.Services.Chat.Pipeline;          // ✅ added
+using Ai.AgentFramwork.Massar.Web.Services;
+using Ai.AgentFramwork.Massar.Web.Services.Chat.DecisionTracking;
+using Ai.AgentFramwork.Massar.Web.Services.Chat.Pipeline;
 using Ai.AgentFramwork.Massar.Web.Tools;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Forms;
@@ -27,6 +28,7 @@ public sealed class ChatService
     private readonly ChatAttachmentStore _attachments;
     private readonly Services.Chat.Pipeline.ChatPipeline _pipeline;
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
+    private readonly RouterDecisionTrackerService _routerDecisionTracker;
 
     // Kept because ChatPipeline calls them, and ChatService still needs to parse/materialize doc attachments.
     private readonly DocumentSearchTool _docSearchTool;
@@ -36,7 +38,10 @@ public sealed class ChatService
 
     public string? CurrentAgentName { get; private set; }
 
-    // ✅ Decision tracker signal for the last completed pipeline turn (UI can read this)
+    // Exposed for tests / diagnostics
+    public RouterDecisionTrackerService RouterDecisionTracker => _routerDecisionTracker;
+
+    // Decision tracker signal for the last completed pipeline turn
     public ChatPipeline.DecisionCandidate? LastDecisionCandidate { get; set; }
 
     public event Action? OnMessagesUpdated
@@ -57,7 +62,8 @@ public sealed class ChatService
         ChatTools tools,
         IDbContextFactory<AppDbContext> dbFactory,
         DocumentSearchTool docSearchTool,
-        DocumentEditTool docEditTool)
+        DocumentEditTool docEditTool,
+        RouterDecisionTrackerService? routerDecisionTracker = null)
     {
         _auth = auth;
         _session = session;
@@ -68,7 +74,8 @@ public sealed class ChatService
         _docSearchTool = docSearchTool;
         _docEditTool = docEditTool;
 
-        // ✅ Build pipeline (ChatAgentFactory is responsible for building the DecisionTracker internally)
+        _routerDecisionTracker = routerDecisionTracker ?? new RouterDecisionTrackerService();
+
         _pipeline = agentFactory.BuildPipeline(
             tools,
             session,
@@ -76,8 +83,9 @@ public sealed class ChatService
             auth,
             docSearchTool,
             docEditTool,
+            routerDecisionTracker: _routerDecisionTracker,
             onRoute: agentName => CurrentAgentName = agentName,
-            getOwnerUserId: () => GetMyUserIdAsync().GetAwaiter().GetResult() // optional (sync)
+            getOwnerUserId: () => GetMyUserIdAsync().GetAwaiter().GetResult()
         );
     }
 
@@ -87,16 +95,11 @@ public sealed class ChatService
         Scoped = 2
     }
 
-    // ✅ Clears per-turn UI signals (prevents dialog popping again)
     private void ClearTurnSignals()
     {
         LastDecisionCandidate = null;
     }
 
-    /// <summary>
-    /// Persists a decision into DecisionRecord table.
-    /// Uses reflection to avoid compile breaks if your DecisionRecord fields differ slightly.
-    /// </summary>
     public async Task<Guid> SaveDecisionRecordAsync(
         DecisionDraft draft,
         DecisionDetection detection,
@@ -104,10 +107,8 @@ public sealed class ChatService
     {
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
 
-        //add back1
         var row = new DecisionRecord();
 
-        // Key (try common names)
         var newId = Guid.NewGuid();
         SetFirstExisting(row,
             new (string Name, object? Value)[]
@@ -117,11 +118,9 @@ public sealed class ChatService
                 ("DecisionId", newId)
             });
 
-        // Required-ish
         SetIfExists(row, "Decision", draft.Decision);
         SetIfExists(row, "Rationale", draft.Rationale);
 
-        // Created timestamps (try common names)
         SetFirstExisting(row,
             new (string Name, object? Value)[]
             {
@@ -130,7 +129,6 @@ public sealed class ChatService
                 ("CreatedOn", DateTime.UtcNow)
             });
 
-        // Optional metadata
         SetIfExists(row, "OwnerUserId", draft.OwnerUserId);
         SetIfExists(row, "ConversationId", draft.ConversationId);
         SetIfExists(row, "ConfidenceScore", draft.ConfidenceScore);
@@ -138,13 +136,9 @@ public sealed class ChatService
         SetIfExists(row, "Trigger", detection.Trigger);
         SetIfExists(row, "Excerpt", detection.Excerpt);
 
-        // Safer than db.DecisionRecords.Add(...) if DbSet name differs
-
-        //add back1
         db.Set<DecisionRecord>().Add(row);
         await db.SaveChangesAsync(ct);
 
-        // Return id if possible (try to read it back)
         var savedId =
             GetGuidIfExists(row, "DecisionRecordId") ??
             GetGuidIfExists(row, "Id") ??
@@ -161,20 +155,17 @@ public sealed class ChatService
 
         if (value is null)
         {
-            // allow setting null for nullable/reference props
             if (!p.PropertyType.IsValueType || Nullable.GetUnderlyingType(p.PropertyType) is not null)
                 p.SetValue(target, null);
             return;
         }
 
-        // If type matches, set directly
         if (p.PropertyType.IsAssignableFrom(value.GetType()))
         {
             p.SetValue(target, value);
             return;
         }
 
-        // Try convert (e.g., Guid? -> Guid, double -> decimal, etc.)
         try
         {
             var destType = Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType;
@@ -183,7 +174,6 @@ public sealed class ChatService
         }
         catch
         {
-            // ignore if cannot convert
         }
     }
 
@@ -285,7 +275,7 @@ public sealed class ChatService
             .Select(u => u.RoleId)
             .FirstOrDefaultAsync(ct);
 
-        return roleId == 0 ? Array.Empty<int>() : (int[])new[] { roleId.Value };
+        return roleId == 0 ? Array.Empty<int>() : new[] { roleId.Value };
     }
 
     private async Task<IReadOnlyList<object>> MaterializeDocSearchAttachmentsAsync(
@@ -465,7 +455,6 @@ public sealed class ChatService
 
         var conversationId = _session.ActiveConversationId!.Value;
 
-        // Save uploaded files and embed links into user text
         var userAttachments = await _attachments.SaveUploadedFilesAsync(conversationId, files, streamCt);
         var userText = _attachments.AppendAttachmentLinks(GetText(userMessage), userAttachments);
 
@@ -482,48 +471,32 @@ public sealed class ChatService
 
         _session.ClearAssistantAttachments();
 
-        // Create streaming placeholder
         var responseText = new TextContent("");
         var inProgress = new ChatMessage(ChatRole.Assistant, new[] { responseText });
         _session.SetStreamingMessage(inProgress);
 
         var rawUserQuery = StripMarkdownLinks(GetText(userMessage));
 
-        // ---------- PIPELINE EXECUTION ----------
         _session.ClearStreamingMessage();
 
-        // Keep a live in-progress message for UI updates
         responseText = new TextContent("");
         inProgress = new ChatMessage(ChatRole.Assistant, new[] { responseText });
         _session.SetStreamingMessage(inProgress);
 
-        // ✅ Clear any previous decision candidate before running a new turn
         ClearTurnSignals();
 
-        // Execute pipeline
         var result = await _pipeline.ExecuteAsync(rawUserQuery, streamCt);
 
-        // ✅ Capture decision candidate for UI to consume AFTER the send finishes
         LastDecisionCandidate = result.DecisionCandidate;
 
-        Console.WriteLine($"[DECISION] candidate? {LastDecisionCandidate != null}");
-        if (LastDecisionCandidate != null)
-        {
-            Console.WriteLine($"[DECISION] conf={LastDecisionCandidate.Detection.ConfidenceScore:0.00} trigger={LastDecisionCandidate.Detection.Trigger} mode={LastDecisionCandidate.Detection.Mode}");
-        }
-
-        // Update UI once
         responseText.Text = result.Text;
         ChatMessageItem.NotifyChanged(inProgress);
         yield return _session.Messages;
 
         var rawAssistant = result.Text;
-        Console.WriteLine("RAW ASSISTANT OUTPUT:" + rawAssistant);
 
-        // ---------- Attachment JSON handling ----------
         if (TryParseDocSearchJson(rawAssistant, out var docPayload) && docPayload is not null)
         {
-            // ✅ Decision popup should NOT show for doc-json replies
             LastDecisionCandidate = null;
 
             var roleIds = await GetRoleIdsAsync(persistCt);
@@ -565,12 +538,10 @@ public sealed class ChatService
             yield break;
         }
 
-        // Not doc JSON: treat as normal assistant output and apply attachment links (e.g., chart images)
         var assistantText = _attachments.AppendAttachmentLinks(
             rawAssistant,
             _session.CreatedAssistantAttachments);
 
-        // If chart tool produced an image attachment, ensure it's shown
         var firstImage = _session.CreatedAssistantAttachments
             .FirstOrDefault(a => a.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase));
 

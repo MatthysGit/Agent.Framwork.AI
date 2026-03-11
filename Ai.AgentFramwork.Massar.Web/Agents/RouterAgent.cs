@@ -63,6 +63,16 @@ public sealed class RouterAgent
                 Reason: "Hard-guard: data intelligence request detected.");
         }
 
+        // Hard guard: what-if simulation / scenario analysis intent
+        // IMPORTANT: must be before forecasting so scenario prompts do not get misrouted.
+        if (IsWhatIfSimulationIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.WhatIfSimulationAgentName,
+                Reason: "Hard-guard: what-if simulation request detected.");
+        }
+
         // Hard guard: forecasting / predictive analytics intent
         if (IsForecastingIntent(userMessage))
         {
@@ -81,6 +91,26 @@ public sealed class RouterAgent
                 Reason: "Hard-guard: anomaly detection request detected.");
         }
 
+        // Hard guard: explicit ranked / structured SQL retrieval intent
+        // IMPORTANT: this must be before segmentation so territory ranking prompts do not get misrouted.
+        if (IsExplicitSqlRetrievalIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.SqlAgentName,
+                Reason: "Hard-guard: explicit SQL retrieval request detected.");
+        }
+
+        // Hard guard: open exploratory analysis intent
+        // IMPORTANT: this must be before segmentation so exploration prompts do not get misrouted.
+        if (IsOpenExplorationIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.DataExplorerAgentName,
+                Reason: "Hard-guard: open exploratory analysis request detected.");
+        }
+
         // Hard guard: segmentation / grouped breakdown intent
         if (IsSegmentationIntent(userMessage))
         {
@@ -88,15 +118,6 @@ public sealed class RouterAgent
                 Mode: "agent",
                 Agent: ChatAgentFactory.DataSegmentationAgentName,
                 Reason: "Hard-guard: segmentation request detected.");
-        }
-
-        // Hard guard: what-if simulation / scenario analysis intent
-        if (IsWhatIfSimulationIntent(userMessage))
-        {
-            return new RouteResult(
-                Mode: "agent",
-                Agent: ChatAgentFactory.WhatIfSimulationAgentName,
-                Reason: "Hard-guard: what-if simulation request detected.");
         }
 
         // Hard guard: "what is included / what does it say" doc questions
@@ -116,7 +137,6 @@ public sealed class RouterAgent
 
         var transcript = string.Join("\n", last);
 
-        // IMPORTANT: use $$$""" so JSON braces are treated as literal content
         var system = $$$"""
 You are the ROUTER only. Do NOT call tools. Do NOT answer the user.
 Return ONLY strict JSON.
@@ -132,6 +152,9 @@ Schema (return exactly this shape):
         | \"{{{ChatAgentFactory.ExecutiveInsightAgentName}}}\"
         | \"{{{ChatAgentFactory.DataIntelligenceAgentName}}}\"
         | \"{{{ChatAgentFactory.ForecastingAgentName}}}\"
+        | \"{{{ChatAgentFactory.WhatIfSimulationAgentName}}}\"
+        | \"{{{ChatAgentFactory.AnomalyDetectionAgentName}}}\"
+        | \"{{{ChatAgentFactory.DataSegmentationAgentName}}}\"
         | \"{{{ChatAgentFactory.LlmChatAgentName}}}\",
   \"reason\": \"<short reason>\",
   \"chartType\": \"column\"|\"bar\"|\"pie\"|\"line\"|\"area\"|\"donut\"|\"gauge\"|\"progress\"|\"multicolumn\"|null
@@ -146,29 +169,17 @@ A) DOCUMENT EDIT INTENT (HIGHEST PRIORITY):
 A2) EXCEL / SPREADSHEET ANALYTICS INTENT (HIGH PRIORITY, ONLY IF NOT EDITING):
 - If the user asks to analyze a spreadsheet (insights, trends, KPIs, dashboard, anomalies, top items, financial/sales analysis),
   choose agent \"{{{ChatAgentFactory.ExcelAnalyticsAgentName}}}\".
-- This is true even if the message mentions xlsx/xls/csv or contains an attachment link.
-- Examples:
-  - \"Analyze this spreadsheet\"
-  - \"Generate insights from the attached Excel\"
-  - \"Create a dashboard / KPIs\"
-  - \"Find top categories and a trend chart\"
-  - \"Summarize sales performance and plot revenue over time\"
 
 A3) EXECUTIVE INSIGHT INTENT:
 - If the user asks for executive summary, leadership summary, management summary, business overview,
   performance summary, top insights, key insights, what matters most, risks and opportunities,
   board summary, strategic insights, or an executive-level summary of performance,
   choose agent \"{{{ChatAgentFactory.ExecutiveInsightAgentName}}}\".
-- Prefer this route when the user wants leadership-ready interpretation rather than raw data rows.
-- Examples:
-  - \"Give me an executive summary of company performance this month\"
-  - \"What are the top insights leadership should know?\"
-  - \"Summarize the business risks and opportunities\"
-  - \"What matters most for management this week?\"
 
-A4) FORECASTING / PREDICTIVE ANALYTICS INTENT:
-- If the user asks to forecast, predict, project forward, estimate future values, or generate baseline / optimistic / conservative scenarios,
-  choose agent \"{{{ChatAgentFactory.ForecastingAgentName}}}\".
+A4) DATA INTELLIGENCE INTENT:
+- If the user asks for business intelligence summary, cross-domain insights, most important insights,
+  recommended actions for leadership, or interpretation across products, territories, and customers,
+  choose agent \"{{{ChatAgentFactory.DataIntelligenceAgentName}}}\".
 
 A5) WHAT-IF / SCENARIO SIMULATION INTENT:
 - If the user asks what happens if a business variable changes, simulate impact, or run a what-if scenario,
@@ -177,42 +188,39 @@ A5) WHAT-IF / SCENARIO SIMULATION INTENT:
   - \"What happens if we increase prices by 10%?\"
   - \"Simulate a 5% reduction in cost by department\"
   - \"What if headcount grows 8% next year?\"
+
+A6) FORECASTING / PREDICTIVE ANALYTICS INTENT:
+- If the user asks to forecast, predict, project forward, or estimate future values,
+  choose agent \"{{{ChatAgentFactory.ForecastingAgentName}}}\".
 - Examples:
   - \"Forecast monthly sales for the next 6 months\"
   - \"Predict revenue by region next quarter\"
   - \"Project orders for the next 12 months\"
 
-B) DOCUMENT SEARCH / LOOKUP INTENT (ONLY IF NOT EDITING OR EXCEL ANALYTICS OR EXECUTIVE INSIGHT):
+A7) ANOMALY DETECTION INTENT:
+- If the user asks to identify anomalies, unusual spikes/drops, outliers, abnormal patterns, or unexpected changes,
+  choose agent \"{{{ChatAgentFactory.AnomalyDetectionAgentName}}}\".
+
+A8) OPEN EXPLORATORY ANALYSIS INTENT:
+- If the user asks to explore data broadly, find main patterns, strongest/weakest markets, notable trends,
+  across geography/category/region/country/product dimensions, choose agent \"{{{ChatAgentFactory.DataExplorerAgentName}}}\".
+
+A9) SEGMENTATION INTENT:
+- If the user asks to segment customers/entities based on spend, frequency, recency, value bands, cohorts, or segment labels,
+  choose agent \"{{{ChatAgentFactory.DataSegmentationAgentName}}}\".
+
+B) DOCUMENT SEARCH / LOOKUP INTENT:
 - If the user's message OR recent chat context indicates they want information contained in a document (policy/contract/agreement/kit),
-  you MUST choose agent \"{{{ChatAgentFactory.DocumentSearchAgentName}}}\".
-  This includes questions like:
-  - \"what is included in the survival kit\"
-  - \"what is included in the policy\"
-  - \"what does the contract say\"
-  - \"what is in the agreement\"
-  - \"what does the document say about ...\"
-  - \"summarize the policy/contract\"
-  - \"according to the document/policy/contract ...\"
-- Also choose \"{{{ChatAgentFactory.DocumentSearchAgentName}}}\" if the message OR recent chat context contains ANY of:
-  - '/api/chat/attachments/' or '/documents/files/download/'
-  - pdf, doc, docx, txt
-  - 'according to', 'in the document', 'in the pdf', 'from the file', 'what does it say', 'summarize', 'quote', 'cite'
-NOTE:
-- Do NOT route to DocumentSearchAgent just because of csv/xls/xlsx if the intent is analytics/insights/KPIs/dashboard/charts.
+  choose agent \"{{{ChatAgentFactory.DocumentSearchAgentName}}}\".
 
 CHART RULE:
 - If user asks for a chart/plot/graph AND it requires ANY SQL/database query:
   mode=\"chart\", agent=\"{{{ChatAgentFactory.SqlAgentName}}}\", chartType best fit.
 
 SQL RULE:
-- If clearly SQL/database (not chart) => agent \"{{{ChatAgentFactory.DataExplorerAgentName}}}\".
-
-SQL / DATA EXPLORATION INTENT KEYWORDS (ROUTE TO DataExplorer):
-- If the user asks for: count / how many / number of / total / sum / avg / average / min / max
-- Or asks for: breakdown / grouped by / per / by <dimension>
-- Or mentions database/query/select/sql/table/view
-- Or asks about business metrics like: employees, headcount, sales, revenue, orders, invoices, territories
-=> choose agent \"{{{ChatAgentFactory.DataExplorerAgentName}}}\" (mode=\"agent\" unless chart requested).
+- If the user asks for explicit ranked / tabular / direct retrieval such as top N, ordered results, territory rankings,
+  or explicitly asks to show rows/columns from structured sales tables, choose agent \"{{{ChatAgentFactory.SqlAgentName}}}\".
+- Open exploratory analysis should go to \"{{{ChatAgentFactory.DataExplorerAgentName}}}\" instead.
 
 FALLBACK:
 - Otherwise => agent \"{{{ChatAgentFactory.LlmChatAgentName}}}\".
@@ -221,16 +229,16 @@ Return ONLY JSON. No markdown. No extra keys.
 """;
 
         var messages = new List<OpenAI.Chat.ChatMessage>
-        {
-            new SystemChatMessage(system),
-            new UserChatMessage($"""
+    {
+        new SystemChatMessage(system),
+        new UserChatMessage($"""
 Recent transcript:
 {transcript}
 
 User message:
 {userMessage}
 """)
-        };
+    };
 
         var resp = await _chat.CompleteChatAsync(messages, cancellationToken: ct);
         var text = resp.Value?.Content?.FirstOrDefault()?.Text?.Trim() ?? "";
@@ -245,7 +253,6 @@ User message:
             if (decision is null || string.IsNullOrWhiteSpace(decision.Mode) || string.IsNullOrWhiteSpace(decision.Agent))
                 return new RouteResult("agent", ChatAgentFactory.LlmChatAgentName, "Empty router decision; fallback.");
 
-            // Safety normalization
             var mode = (decision.Mode ?? "agent").Trim().ToLowerInvariant();
             var agent = (decision.Agent ?? ChatAgentFactory.LlmChatAgentName).Trim();
 
@@ -262,17 +269,26 @@ User message:
             if (IsExecutiveInsightIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.ExecutiveInsightAgentName, "Hard-guard: executive insight request detected.");
 
+            if (IsDataIntelligenceIntent(userMessage))
+                return new RouteResult("agent", ChatAgentFactory.DataIntelligenceAgentName, "Hard-guard: data intelligence request detected.");
+
+            if (IsWhatIfSimulationIntent(userMessage))
+                return new RouteResult("agent", ChatAgentFactory.WhatIfSimulationAgentName, "Hard-guard: what-if simulation request detected.");
+
             if (IsForecastingIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.ForecastingAgentName, "Hard-guard: forecasting request detected.");
 
             if (IsAnomalyDetectionIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.AnomalyDetectionAgentName, "Hard-guard: anomaly detection request detected.");
 
+            if (IsExplicitSqlRetrievalIntent(userMessage))
+                return new RouteResult("agent", ChatAgentFactory.SqlAgentName, "Hard-guard: explicit SQL retrieval request detected.");
+
+            if (IsOpenExplorationIntent(userMessage))
+                return new RouteResult("agent", ChatAgentFactory.DataExplorerAgentName, "Hard-guard: open exploratory analysis request detected.");
+
             if (IsSegmentationIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.DataSegmentationAgentName, "Hard-guard: segmentation request detected.");
-
-            if (IsWhatIfSimulationIntent(userMessage))
-                return new RouteResult("agent", ChatAgentFactory.WhatIfSimulationAgentName, "Hard-guard: what-if simulation request detected.");
 
             if (IsDocumentContentQuestion(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.DocumentSearchAgentName, "Hard-guard: document content question detected.");
@@ -283,6 +299,52 @@ User message:
         {
             return new RouteResult("agent", ChatAgentFactory.LlmChatAgentName, "Router output not valid JSON; fallback.");
         }
+    }
+
+    private static bool IsExplicitSqlRetrievalIntent(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        var text = message.Trim();
+
+        return
+            text.Contains("top 10 sales territories", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("top sales territories", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("sales territory", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("salesytd", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("saleslastyear", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("territory name", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("country region code", StringComparison.OrdinalIgnoreCase) ||
+            (
+                (text.Contains("show me", StringComparison.OrdinalIgnoreCase) ||
+                 text.Contains("list", StringComparison.OrdinalIgnoreCase) ||
+                 text.Contains("top 10", StringComparison.OrdinalIgnoreCase) ||
+                 text.Contains("top 5", StringComparison.OrdinalIgnoreCase) ||
+                 text.Contains("rank", StringComparison.OrdinalIgnoreCase))
+                &&
+                (text.Contains("territory", StringComparison.OrdinalIgnoreCase) ||
+                 text.Contains("sales territory", StringComparison.OrdinalIgnoreCase) ||
+                 text.Contains("salesytd", StringComparison.OrdinalIgnoreCase))
+            );
+    }
+
+    private static bool IsOpenExplorationIntent(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        var text = message.Trim();
+
+        return
+            text.Contains("explore reseller sales", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("show the main patterns", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("strongest markets", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("weakest markets", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("notable trends", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("by geography and category", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("by country, region, and product category", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("explore sales performance", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsDocumentContentQuestion(string text)
@@ -339,30 +401,54 @@ User message:
         return false;
     }
 
-    private static bool IsDocumentEditIntent(string text)
+    private static bool IsDocumentEditIntent(string? message)
     {
-        if (string.IsNullOrWhiteSpace(text)) return false;
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
 
-        var t = text.ToLowerInvariant();
+        var text = message.Trim();
 
-        return t.Contains("add comment")
-               || t.Contains("add comments")
-               || t.Contains("comment on")
-               || t.Contains("review the document")
-               || t.Contains("review this document")
-               || t.Contains("review")
-               || t.Contains("annotate")
-               || t.Contains("highlight")
-               || t.Contains("track changes")
-               || t.Contains("suggest changes")
-               || t.Contains("edit the document")
-               || t.Contains("proofread")
-               || t.Contains("revise")
-               || t.Contains("rewrite")
-               || t.Contains("fix grammar")
-               || t.Contains("make changes");
+        var hasEditVerb =
+            text.Contains("comment on", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("add comments", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("annotate", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("highlight", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("proofread", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("revise", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("edit", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("review", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("track changes", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("suggest changes", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("fix grammar", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("rewrite", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("modify", StringComparison.OrdinalIgnoreCase);
+
+        var hasDocumentContext =
+            text.Contains("document", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("doc", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("docx", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("pdf", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("file", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("contract", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("agreement", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("policy", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("proposal", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("attachment", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("/api/chat/attachments/", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("/documents/files/download/", StringComparison.OrdinalIgnoreCase);
+
+        // Strong direct document-edit phrases should still win immediately.
+        var hasStrongDocumentEditPhrase =
+            text.Contains("review the attached", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("comment on the document", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("add comments to the document", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("annotate this document", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("proofread this contract", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("revise this document", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("edit this agreement", StringComparison.OrdinalIgnoreCase);
+
+        return hasStrongDocumentEditPhrase || (hasEditVerb && hasDocumentContext);
     }
-
     private static bool IsExcelAnalyticsIntent(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
@@ -523,41 +609,35 @@ User message:
 
 
 
-    private static bool IsWhatIfSimulationIntent(string text)
+    private static bool IsWhatIfSimulationIntent(string? message)
     {
-        if (string.IsNullOrWhiteSpace(text)) return false;
-
-        if (IsExcelAnalyticsIntent(text) || IsForecastingIntent(text) || IsAnomalyDetectionIntent(text) || IsSegmentationIntent(text))
+        if (string.IsNullOrWhiteSpace(message))
             return false;
 
-        var t = text.ToLowerInvariant();
+        var text = message.Trim();
 
-        var scenarioTerms =
-            t.Contains("what if") ||
-            t.Contains("what-if") ||
-            t.Contains("simulate") ||
-            t.Contains("simulation") ||
-            t.Contains("scenario analysis") ||
-            t.Contains("impact of") ||
-            t.Contains("effect of");
-
-        var changeTerms =
-            t.Contains("increase") ||
-            t.Contains("decrease") ||
-            t.Contains("reduce") ||
-            t.Contains("drop") ||
-            t.Contains("raise") ||
-            t.Contains("grow") ||
-            t.Contains("boost") ||
-            t.Contains("%");
-
-        var businessTerms =
-            t.Contains("price") || t.Contains("discount") || t.Contains("cost") || t.Contains("expense") ||
-            t.Contains("margin") || t.Contains("profit") || t.Contains("revenue") || t.Contains("sales") ||
-            t.Contains("volume") || t.Contains("demand") || t.Contains("headcount") || t.Contains("employee") ||
-            t.Contains("staff") || t.Contains("orders");
-
-        return (scenarioTerms && changeTerms) || (changeTerms && businessTerms && (t.Contains("what happens") || t.Contains("impact")));
+        return
+            text.Contains("what if", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("what-if", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("simulate", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("scenario", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("impact if", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("what would be the impact", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("impact on total revenue", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("impact on gross profit", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("baseline vs simulated", StringComparison.OrdinalIgnoreCase) ||
+            (
+                text.Contains("increase", StringComparison.OrdinalIgnoreCase) &&
+                text.Contains("discount", StringComparison.OrdinalIgnoreCase)
+            ) ||
+            (
+                text.Contains("sales volume", StringComparison.OrdinalIgnoreCase) &&
+                text.Contains("discount rate", StringComparison.OrdinalIgnoreCase)
+            ) ||
+            (
+                text.Contains("increased by", StringComparison.OrdinalIgnoreCase) &&
+                text.Contains("while", StringComparison.OrdinalIgnoreCase)
+            );
     }
     private static bool IsDataIntelligenceIntent(string text)
     {

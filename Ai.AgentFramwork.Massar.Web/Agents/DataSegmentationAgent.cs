@@ -51,6 +51,20 @@ CORE SEGMENTATION RULES:
 - If the user asks for contribution/share, calculate percentage of total when reasonably supported by SQL.
 - If the user asks for multi-level segmentation, keep the query simple and explainable.
 - If the request is ambiguous, make the safest reasonable business interpretation and proceed without asking a clarifying question.
+- This system uses SQL Server syntax.
+- For quantile / percentile-based customer segmentation, SQL Server PERCENTILE_CONT / PERCENTILE_DISC MUST use OVER(...).
+- Never generate percentile logic as a plain scalar subquery without OVER(...).
+- For percentile thresholds, use a BaseData CTE plus a Thresholds CTE with SELECT DISTINCT and CROSS JOIN the thresholds into the final CASE labeling step.
+- Example safe pattern:
+  WITH BaseData AS (...),
+  Thresholds AS (
+      SELECT DISTINCT
+          PERCENTILE_CONT(0.8) WITHIN GROUP (ORDER BY TotalSpend) OVER () AS TotalSpendP80,
+          PERCENTILE_CONT(0.8) WITHIN GROUP (ORDER BY OrderFrequency) OVER () AS OrderFrequencyP80,
+          PERCENTILE_CONT(0.2) WITHIN GROUP (ORDER BY Recency) OVER () AS RecencyP20
+      FROM BaseData
+  )
+  SELECT ... FROM BaseData CROSS JOIN Thresholds ...
 
 SEGMENTATION OUTPUT FORMAT (NON-CHART):
 - Start with a short title line: Segmentation Summary

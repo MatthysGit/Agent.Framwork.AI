@@ -62,6 +62,9 @@ builder.Services.AddScoped<IEmbeddingService, OpenAiEmbeddingService>();
 builder.Services.AddScoped<IDocumentIngestService, DocumentIngestService>();
 builder.Services.AddScoped<IDocumentSearchService, DocumentSearchService>();
 builder.Services.AddScoped<IChunkReindexService, ChunkReindexService>();
+builder.Services.AddScoped<IRouterDecisionTrackerService, RouterDecisionTrackerService>();
+
+//
 
 builder.Services.AddScoped<ChatAttachmentReaderTool>();
 

@@ -70,7 +70,8 @@ public sealed class ChatAgentFactory
         AuthenticationStateProvider auth,
         DocumentSearchTool docSearchTool,
         DocumentEditTool docEditTool,
-        IDecisionTrackerService? decisionTracker = null,   // ✅ optional
+        IDecisionTrackerService? decisionTracker = null,   // optional
+        RouterDecisionTrackerService? routerDecisionTracker = null,
         Action<string>? onRoute = null,
         Func<string?>? getOwnerUserId = null)
     {
@@ -160,6 +161,7 @@ public sealed class ChatAgentFactory
             canViewCompensationAsync: () => IsPrivileged(),
             isPrivilegedAsync: () => IsPrivileged(),
             decisionTracker: decisionTracker,
+            routerDecisionTracker: routerDecisionTracker,
             getOwnerUserId: getOwnerUserId
         );
     }
