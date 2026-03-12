@@ -1,7 +1,11 @@
 <Solution>
   <Project Path="Ai.AgentFramwork.Massar.AppHost/Ai.AgentFramwork.Massar.AppHost.csproj" />
   <Project Path="Ai.AgentFramwork.Massar.ServiceDefaults/Ai.AgentFramwork.Massar.ServiceDefaults.csproj" />
-  <Project Path="Ai.AgentFramwork.Massar.Web.IntegrationTests/Ai.AgentFramwork.Massar.Web.IntegrationTests.csproj" />
-  <Project Path="Ai.AgentFramwork.Massar.Web.Tests/Ai.AgentFramwork.Massar.Web.Tests.csproj" />
+  <Project Path="Ai.AgentFramwork.Massar.Web.IntegrationTests/Ai.AgentFramwork.Massar.Web.IntegrationTests.csproj">
+    <Build Solution="Debug|*" Project="false" />
+  </Project>
+  <Project Path="Ai.AgentFramwork.Massar.Web.Tests/Ai.AgentFramwork.Massar.Web.Tests.csproj">
+    <Build Solution="Debug|*" Project="false" />
+  </Project>
   <Project Path="Ai.AgentFramwork.Massar.Web/Ai.AgentFramwork.Massar.Web.csproj" />
 </Solution>
