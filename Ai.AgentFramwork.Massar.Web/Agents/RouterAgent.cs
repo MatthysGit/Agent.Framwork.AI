@@ -91,6 +91,33 @@ public sealed class RouterAgent
                 Reason: "Hard-guard: anomaly detection request detected.");
         }
 
+        // Hard guard: schema discovery belongs to explorer.
+        if (IsSchemaDiscoveryIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.DataExplorerAgentName,
+                Reason: "Hard-guard: schema discovery request detected.");
+        }
+
+        // Hard guard: profiling a specific table belongs to explorer, not direct SQL retrieval.
+        if (IsTableProfilingIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.DataExplorerAgentName,
+                Reason: "Hard-guard: table profiling/schema exploration request detected.");
+        }
+
+        // Hard guard: schema/entity relationship explanation belongs to explorer.
+        if (IsSchemaRelationshipIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.DataExplorerAgentName,
+                Reason: "Hard-guard: schema relationship exploration request detected.");
+        }
+
         // Hard guard: explicit ranked / structured SQL retrieval intent
         // IMPORTANT: this must be before segmentation so territory ranking prompts do not get misrouted.
         if (IsExplicitSqlRetrievalIntent(userMessage))
@@ -118,6 +145,15 @@ public sealed class RouterAgent
                 Mode: "agent",
                 Agent: ChatAgentFactory.DataSegmentationAgentName,
                 Reason: "Hard-guard: segmentation request detected.");
+        }
+
+        // Hard guard: explicit document search / glossary / documentation lookup intent
+        if (IsDocumentSearchIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.DocumentSearchAgentName,
+                Reason: "Hard-guard: document search request detected.");
         }
 
         // Hard guard: "what is included / what does it say" doc questions
@@ -281,6 +317,9 @@ User message:
             if (IsAnomalyDetectionIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.AnomalyDetectionAgentName, "Hard-guard: anomaly detection request detected.");
 
+            if (IsSchemaDiscoveryIntent(userMessage))
+                return new RouteResult("agent", ChatAgentFactory.DataExplorerAgentName, "Hard-guard: schema discovery request detected.");
+
             if (IsExplicitSqlRetrievalIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.SqlAgentName, "Hard-guard: explicit SQL retrieval request detected.");
 
@@ -289,6 +328,9 @@ User message:
 
             if (IsSegmentationIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.DataSegmentationAgentName, "Hard-guard: segmentation request detected.");
+
+            if (IsDocumentSearchIntent(userMessage))
+                return new RouteResult("agent", ChatAgentFactory.DocumentSearchAgentName, "Hard-guard: document search request detected.");
 
             if (IsDocumentContentQuestion(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.DocumentSearchAgentName, "Hard-guard: document content question detected.");
@@ -306,27 +348,161 @@ User message:
         if (string.IsNullOrWhiteSpace(message))
             return false;
 
+        if (IsSchemaDiscoveryIntent(message) || IsTableProfilingIntent(message) || IsSchemaRelationshipIntent(message))
+            return false;
+
+        if (IsDocumentSearchIntent(message) || IsForecastingIntent(message) || IsWhatIfSimulationIntent(message))
+            return false;
+
         var text = message.Trim();
+        var t = text.ToLowerInvariant();
+
+        var explicitSqlLanguage =
+            t.Contains("write sql") ||
+            t.Contains("generate sql") ||
+            t.Contains("show sql") ||
+            t.Contains("sql query") ||
+            t.Contains("select statement") ||
+            t.Contains("t-sql") ||
+            t.Contains("explain the sql") ||
+            t.Contains("explain sql") ||
+            t.Contains("query sales from table") ||
+            t.StartsWith("query ") ||
+            t.StartsWith("select ") ||
+            t.StartsWith("delete ") ||
+            t.StartsWith("update ") ||
+            t.StartsWith("insert ") ||
+            t.StartsWith("drop ") ||
+            t.StartsWith("truncate ");
+
+        var rankedRetrieval =
+            t.Contains("top 10") ||
+            t.Contains("top 5") ||
+            t.Contains("top ") ||
+            t.Contains("rank ") ||
+            t.Contains("ranked") ||
+            t.Contains("ordered results") ||
+            t.Contains("order by");
+
+        var sqlShapedRequest =
+            t.Contains("with territory name") ||
+            t.Contains("territory name") ||
+            t.Contains("customer name") ||
+            t.Contains("product category") ||
+            t.Contains("by year") ||
+            t.Contains("table ") ||
+            t.Contains("rows") ||
+            t.Contains("columns") ||
+            t.Contains("show me the query") ||
+            System.Text.RegularExpressions.Regex.IsMatch(t, @"\b[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\b");
 
         return
-            text.Contains("top 10 sales territories", StringComparison.OrdinalIgnoreCase) ||
+            explicitSqlLanguage ||
+            (rankedRetrieval && sqlShapedRequest) ||
             text.Contains("top sales territories", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("sales territory", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("salesytd", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("saleslastyear", StringComparison.OrdinalIgnoreCase) ||
-            text.Contains("territory name", StringComparison.OrdinalIgnoreCase) ||
-            text.Contains("country region code", StringComparison.OrdinalIgnoreCase) ||
-            (
-                (text.Contains("show me", StringComparison.OrdinalIgnoreCase) ||
-                 text.Contains("list", StringComparison.OrdinalIgnoreCase) ||
-                 text.Contains("top 10", StringComparison.OrdinalIgnoreCase) ||
-                 text.Contains("top 5", StringComparison.OrdinalIgnoreCase) ||
-                 text.Contains("rank", StringComparison.OrdinalIgnoreCase))
-                &&
-                (text.Contains("territory", StringComparison.OrdinalIgnoreCase) ||
-                 text.Contains("sales territory", StringComparison.OrdinalIgnoreCase) ||
-                 text.Contains("salesytd", StringComparison.OrdinalIgnoreCase))
-            );
+            text.Contains("country region code", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSchemaDiscoveryIntent(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        var t = message.Trim().ToLowerInvariant();
+
+        return
+            t.Contains("what tables should i use") ||
+            t.Contains("which tables should i use") ||
+            t.StartsWith("what tables") ||
+            t.StartsWith("which tables") ||
+            t.Contains("what columns") ||
+            t.Contains("which columns") ||
+            t.Contains("where can i find") ||
+            t.Contains("what schema") ||
+            t.Contains("which schema") ||
+            t.Contains("how do i join") ||
+            t.Contains("how should i join") ||
+            t.Contains("what joins") ||
+            t.Contains("what data source") ||
+            t.Contains("which data source") ||
+            t.Contains("how is data stored") ||
+            t.Contains("where is the data") ||
+            t.Contains("which table contains") ||
+            t.Contains("what table contains");
+    }
+
+    private static bool IsTableProfilingIntent(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        var t = message.Trim().ToLowerInvariant();
+
+        var profilingVerb =
+            t.StartsWith("profile ") ||
+            t.StartsWith("describe ") ||
+            t.StartsWith("inspect ") ||
+            t.StartsWith("explore ") ||
+            t.Contains(" table profile") ||
+            t.Contains("profile table") ||
+            t.Contains("describe table") ||
+            t.Contains("inspect table") ||
+            t.Contains("explain table") ||
+            t.Contains("list columns") ||
+            t.Contains("show columns") ||
+            t.Contains("what columns are in");
+
+        var referencesSpecificTable =
+            System.Text.RegularExpressions.Regex.IsMatch(t, @"\b[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\b") ||
+            t.Contains(" table ") ||
+            t.EndsWith(" table") ||
+            t.StartsWith("table ");
+
+        return profilingVerb && referencesSpecificTable;
+    }
+
+    private static bool IsSchemaRelationshipIntent(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        if (IsDataIntelligenceIntent(message))
+            return false;
+
+        var t = message.Trim().ToLowerInvariant();
+
+        var relationshipLanguage =
+            t.StartsWith("explain how ") ||
+            t.Contains(" relate to ") ||
+            t.Contains(" relates to ") ||
+            t.Contains(" relationship between ") ||
+            (t.Contains("how are ") && t.Contains(" related")) ||
+            (t.Contains("how do ") && t.Contains(" relate")) ||
+            (t.Contains("how does ") && t.Contains(" relate")) ||
+            (t.Contains("how are ") && t.Contains(" connected")) ||
+            (t.Contains("how do ") && t.Contains(" connect"));
+
+        var schemaTerms =
+            t.Contains("table") ||
+            t.Contains("tables") ||
+            t.Contains("column") ||
+            t.Contains("columns") ||
+            t.Contains("schema") ||
+            t.Contains("join") ||
+            t.Contains("joins") ||
+            t.Contains("foreign key") ||
+            t.Contains("relationship") ||
+            t.Contains("relationships") ||
+            t.Contains("data model") ||
+            t.Contains("entity") ||
+            t.Contains("employee") ||
+            t.Contains("employees") ||
+            System.Text.RegularExpressions.Regex.IsMatch(t, @"\b[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\b");
+
+        return relationshipLanguage && schemaTerms;
     }
 
     private static bool IsOpenExplorationIntent(string? message)
@@ -345,6 +521,53 @@ User message:
             text.Contains("by geography and category", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("by country, region, and product category", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("explore sales performance", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsDocumentSearchIntent(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        if (IsExcelAnalyticsIntent(text) || IsDocumentEditIntent(text))
+            return false;
+
+        var t = text.ToLowerInvariant();
+
+        var seeksDocumentation =
+            t.Contains("find documentation") ||
+            t.Contains("find docs") ||
+            t.Contains("find documents") ||
+            t.Contains("project documents") ||
+            t.Contains("our project documents") ||
+            t.Contains("business glossary") ||
+            t.Contains("official definition") ||
+            t.Contains("definition of") ||
+            t.Contains("documentation about") ||
+            t.Contains("docs related to") ||
+            t.Contains("find documentation about") ||
+            t.Contains("find docs related to") ||
+            t.Contains("in our project documents") ||
+            t.Contains("in the project documents") ||
+            t.Contains("in our documents") ||
+            t.Contains("according to the glossary") ||
+            t.Contains("what is the definition of") ||
+            t.Contains("what's the definition of");
+
+        var documentConcept =
+            t.Contains("documentation") ||
+            t.Contains("docs") ||
+            t.Contains("documents") ||
+            t.Contains("glossary") ||
+            t.Contains("definition") ||
+            t.Contains("project document") ||
+            t.Contains("project documents");
+
+        var glossaryStyleQuestion =
+            (t.Contains("official definition") || t.Contains("definition of") || t.Contains("what is the definition of") || t.Contains("what's the definition of")) &&
+            (t.Contains("document") || t.Contains("documents") || t.Contains("docs") || t.Contains("glossary") || t.Contains("project"));
+
+        return seeksDocumentation
+               || glossaryStyleQuestion
+               || (documentConcept && (t.Contains("find") || t.Contains("what is the official definition") || t.Contains("what's the official definition")));
     }
 
     private static bool IsDocumentContentQuestion(string text)
@@ -502,7 +725,7 @@ User message:
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
 
-        if (IsExcelAnalyticsIntent(text))
+        if (IsExcelAnalyticsIntent(text) || IsWhatIfSimulationIntent(text))
             return false;
 
         var t = text.ToLowerInvariant();
@@ -511,23 +734,32 @@ User message:
             t.Contains("forecast") ||
             t.Contains("predict") ||
             t.Contains("projection") ||
-            t.Contains("project ") ||
+            t.Contains("project forward") ||
             t.Contains("projected") ||
             t.Contains("predictive") ||
-            t.Contains("expected ") ||
-            t.Contains("outlook") ||
-            t.Contains("scenario");
+            t.Contains("outlook");
 
         var mentionsFutureWindow =
             t.Contains("next month") || t.Contains("next quarter") || t.Contains("next year") ||
             t.Contains("next 3") || t.Contains("next 6") || t.Contains("next 12") ||
             t.Contains("future") || t.Contains("upcoming");
 
+        var mentionsHistoricalModeling =
+            t.Contains("based on prior years") ||
+            t.Contains("based on previous years") ||
+            t.Contains("seasonality") ||
+            t.Contains("seasonal") ||
+            t.Contains("holiday-season") ||
+            t.Contains("holiday season") ||
+            t.Contains("launched last week");
+
         var businessMetric =
             t.Contains("sales") || t.Contains("revenue") || t.Contains("order") || t.Contains("demand") ||
             t.Contains("volume") || t.Contains("cost") || t.Contains("margin") || t.Contains("profit");
 
-        return mentionsForecast || (mentionsFutureWindow && businessMetric);
+        return (mentionsForecast && businessMetric) ||
+               (mentionsFutureWindow && businessMetric) ||
+               (mentionsHistoricalModeling && (mentionsForecast || businessMetric));
     }
 
     private static bool IsAnomalyDetectionIntent(string text)
@@ -577,34 +809,18 @@ User message:
             t.Contains("customers") || t.Contains("invoice") || t.Contains("invoices") || t.Contains("amount") ||
             t.Contains("count") || t.Contains("total");
 
-        var groupingPhrase =
+        var segmentationLanguage =
             t.Contains("segment") ||
             t.Contains("segmentation") ||
-            t.Contains("breakdown") ||
-            t.Contains("split") ||
-            t.Contains("group by") ||
-            t.Contains("grouped by") ||
+            t.Contains("high-value") ||
+            t.Contains("high value") ||
+            t.Contains("medium value") ||
+            t.Contains("low value") ||
             t.Contains("bucket") ||
             t.Contains("classify") ||
-            t.Contains("by region") ||
-            t.Contains("by department") ||
-            t.Contains("by category") ||
-            t.Contains("by territory") ||
-            t.Contains("by country") ||
-            t.Contains("by city") ||
-            t.Contains("by customer") ||
-            t.Contains("by product") ||
-            t.Contains("by channel") ||
-            t.Contains("by segment") ||
-            t.Contains("by type") ||
-            t.Contains("top ") ||
-            t.Contains("bottom ") ||
-            t.Contains("rank") ||
-            t.Contains("contribution") ||
-            t.Contains("share of") ||
-            t.Contains("share by");
+            t.Contains("cohort");
 
-        return businessMetric && groupingPhrase;
+        return businessMetric && segmentationLanguage;
     }
 
 
@@ -660,6 +876,11 @@ User message:
                || t.Contains("business signals")
                || t.Contains("intelligence view")
                || t.Contains("intelligence analysis")
+               || t.Contains("why did")
+               || t.Contains("exact reason")
+               || t.Contains("identify products where sales are strong but")
+               || t.Contains("procurement or stock patterns may be risky")
+               || t.Contains("most important sales insights")
                || (t.Contains("what does") && t.Contains("data suggest"))
                || (t.Contains("what do") && t.Contains("data suggest"));
     }
@@ -685,6 +906,9 @@ User message:
                || t.Contains("summary for leadership")
                || t.Contains("summary for management")
                || t.Contains("leadership should know")
-               || t.Contains("management should know");
+               || t.Contains("management should know")
+               || t.Contains("leadership review")
+               || t.Contains("coo worry about")
+               || t.Contains("for a cfo audience");
     }
 }

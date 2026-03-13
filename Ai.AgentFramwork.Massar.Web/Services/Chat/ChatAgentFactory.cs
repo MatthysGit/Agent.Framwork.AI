@@ -103,7 +103,7 @@ public sealed class ChatAgentFactory
 
 
         _registry.Register(DataExplorerAgentName, (sp, chatClient) =>
-            new SqlAgent().Build(chatClient, DataExplorerAgentName, sqlServerSelectTool));
+            new DataExplorerAgent().Build(chatClient, DataExplorerAgentName, sqlServerSelectTool));
 
 
         _registry.Register(ExecutiveInsightAgentName, (sp, chatClient) =>
@@ -113,7 +113,7 @@ public sealed class ChatAgentFactory
             new DataIntelligenceAgent().Build(chatClient, DataIntelligenceAgentName));
 
         _registry.Register(ForecastingAgentName, (sp, chatClient) =>
-            new ForecastingAgent().Build(chatClient, ForecastingAgentName));
+            new ForecastingAgent().Build(chatClient, ForecastingAgentName, sqlServerSelectTool));
 
         _registry.Register(AnomalyDetectionAgentName, (sp, chatClient) =>
             new AnomalyDetectionAgent().Build(chatClient, AnomalyDetectionAgentName));

@@ -125,7 +125,7 @@ public sealed class ChatPipeline
             $"[ROUTER] mode={r.Mode} agent={r.Agent} chartType={r.ChartType ?? "null"} " +
             $"reason=\"{r.Reason}\" routeMs={swRoute.ElapsedMilliseconds}");
 
-        await TrackRouteAsync("RouterAgent", $"", ct);
+        await TrackRouteAsync("RouterAgent", $"selected={r.Agent}; mode={r.Mode}; reason={r.Reason}", ct);
 
 
 
@@ -134,7 +134,7 @@ public sealed class ChatPipeline
         // ----------------------------
         if (r.Agent.Equals(ChatAgentFactory.DocumentSearchAgentName, StringComparison.OrdinalIgnoreCase))
         {
-            await TrackRouteAsync(r.Agent, "", ct);
+            await TrackRouteAsync(r.Agent, "entered", ct);
 
 
             var convoId = _getConversationId();
@@ -148,7 +148,7 @@ public sealed class ChatPipeline
 
         if (r.Agent.Equals(ChatAgentFactory.DocumentEditAgentName, StringComparison.OrdinalIgnoreCase))
         {
-            await TrackRouteAsync(r.Agent, "", ct);
+            await TrackRouteAsync(r.Agent, "entered", ct);
 
 
 
@@ -169,7 +169,7 @@ public sealed class ChatPipeline
         // ----------------------------
         if (string.Equals(r.Agent, ChatAgentFactory.ExecutiveInsightAgentName, StringComparison.OrdinalIgnoreCase))
         {
-            await TrackRouteAsync(r.Agent, "", ct);
+            await TrackRouteAsync(r.Agent, "entered", ct);
 
 
             var executiveResult = await ExecuteExecutiveInsightAsync(userText, r.Reason, ct);
@@ -183,7 +183,7 @@ public sealed class ChatPipeline
         if (string.Equals(r.Agent, ChatAgentFactory.DataIntelligenceAgentName, StringComparison.OrdinalIgnoreCase))
         {
 
-            await TrackRouteAsync(r.Agent, "", ct);
+            await TrackRouteAsync(r.Agent, "entered", ct);
 
 
 
@@ -197,7 +197,7 @@ public sealed class ChatPipeline
 
         if (string.Equals(r.Agent, ChatAgentFactory.ForecastingAgentName, StringComparison.OrdinalIgnoreCase))
         {
-            await TrackRouteAsync(r.Agent, "", ct);
+            await TrackRouteAsync(r.Agent, "entered", ct);
 
 
             var forecastResult = await ExecuteForecastAsync(userText, r.Reason, ct);
@@ -210,7 +210,7 @@ public sealed class ChatPipeline
 
         if (string.Equals(r.Agent, ChatAgentFactory.AnomalyDetectionAgentName, StringComparison.OrdinalIgnoreCase))
         {
-            await TrackRouteAsync(r.Agent, "", ct);
+            await TrackRouteAsync(r.Agent, "entered", ct);
 
 
             var anomalyResult = await ExecuteAnomalyDetectionAsync(userText, r.Reason, ct);
@@ -223,7 +223,7 @@ public sealed class ChatPipeline
 
         if (string.Equals(r.Agent, "DataSegmentationAgent", StringComparison.OrdinalIgnoreCase))
         {
-            await TrackRouteAsync(r.Agent, "", ct);
+            await TrackRouteAsync(r.Agent, "entered", ct);
 
 
 
@@ -237,7 +237,7 @@ public sealed class ChatPipeline
 
         if (string.Equals(r.Agent, ChatAgentFactory.WhatIfSimulationAgentName, StringComparison.OrdinalIgnoreCase))
         {
-            await TrackRouteAsync(r.Agent, "", ct);
+            await TrackRouteAsync(r.Agent, "entered", ct);
 
 
 
@@ -305,7 +305,7 @@ User request:
 {0}
 ", userText);
 
-            await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "", ct);
+            await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "entered", ct);
             var sql = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, sqlPrompt, cancellationToken: ct);
             Console.WriteLine("SQL_AGENT_RAW_FOR_CHART:\n" + sql.Text);
 
@@ -371,7 +371,7 @@ User request:
 {0}
 ", userText);
 
-                await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "", ct);
+                await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "entered", ct);
                 var tableJson = await _caller.CallAgentAsync(ChatAgentFactory.SqlAgentName, tablePrompt, cancellationToken: ct);
                 var tableJsonOnly = ExtractFirstJsonObject(tableJson.Text) ?? tableJson.Text;
 
@@ -402,12 +402,16 @@ User request:
         // ----------------------------
         // SQL enforcement path (plain text -> render as table; attach hidden payload for email)
         // ----------------------------
-        if ((r.Agent.Equals(ChatAgentFactory.SqlAgentName, StringComparison.OrdinalIgnoreCase) ||
-             r.Agent.Equals("DataExplorer", StringComparison.OrdinalIgnoreCase) ||
-             r.Agent.Equals(ChatAgentFactory.DataExplorerAgentName, StringComparison.OrdinalIgnoreCase)) &&
+        var isSqlAgent = r.Agent.Equals(ChatAgentFactory.SqlAgentName, StringComparison.OrdinalIgnoreCase);
+        var isDataExplorerAgent =
+            r.Agent.Equals("DataExplorer", StringComparison.OrdinalIgnoreCase) ||
+            r.Agent.Equals(ChatAgentFactory.DataExplorerAgentName, StringComparison.OrdinalIgnoreCase);
+        var forceSqlForDataExplorer = isDataExplorerAgent && ShouldForceSqlDataExplorer(userText);
+
+        if ((isSqlAgent || forceSqlForDataExplorer) &&
             !r.Mode.Equals("chart", StringComparison.OrdinalIgnoreCase))
         {
-            await TrackRouteAsync(r.Agent, "", ct);
+            await TrackRouteAsync(r.Agent, "entered", ct);
 
 
             // Always force the agent to return the SqlServerSelectTool JSON payload so the UI can render
@@ -498,13 +502,13 @@ USER REQUEST:
         // ----------------------------
         // Default: call chosen agent
         // ----------------------------
-        await TrackRouteAsync(r.Agent, "", ct);
+        await TrackRouteAsync(r.Agent, "entered", ct);
         var call = await _caller.CallAgentAsync(r.Agent, userText, cancellationToken: ct);
 
         if (r.Agent.Equals(ChatAgentFactory.DocumentSearchAgentName, StringComparison.OrdinalIgnoreCase) ||
             r.Agent.Equals(ChatAgentFactory.DocumentEditAgentName, StringComparison.OrdinalIgnoreCase))
         {
-            await TrackRouteAsync(r.Agent, "", ct);
+            await TrackRouteAsync(r.Agent, "entered", ct);
 
             swTotal.Stop();
             Console.WriteLine($"[PIPELINE] done agent={call.AgentName} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
@@ -527,8 +531,8 @@ USER REQUEST:
     {
         var supportPrompt = BuildDataIntelligenceSupportDataPrompt(userText);
 
-        await TrackRouteAsync(ChatAgentFactory.DataExplorerAgentName, "", ct);
-        //await TrackRouteAsync(ChatAgentFactory.DataExplorerAgentName, "", ct);
+        await TrackRouteAsync(ChatAgentFactory.DataExplorerAgentName, "entered", ct);
+        //await TrackRouteAsync(ChatAgentFactory.DataExplorerAgentName, "entered", ct);
         var support = await _caller.CallAgentAsync(
             ChatAgentFactory.DataExplorerAgentName,
             supportPrompt,
@@ -542,7 +546,7 @@ USER REQUEST:
 
             var retryPrompt = BuildDataIntelligenceSupportDataPrompt(userText, stricter: true);
 
-            await TrackRouteAsync(ChatAgentFactory.DataExplorerAgentName, "", ct);
+            await TrackRouteAsync(ChatAgentFactory.DataExplorerAgentName, "entered", ct);
             //await TrackRouteAsync(ChatAgentFactory.DataExplorerAgentName, "executive-insight support-data retry", ct);
             //await TrackRouteAsync(ChatAgentFactory.DataExplorerAgentName, "forecast support-data retry", ct);
             support = await _caller.CallAgentAsync(
@@ -557,7 +561,7 @@ USER REQUEST:
 
         var synthesisPrompt = BuildDataIntelligenceSynthesisPrompt(userText, finalSupportText);
 
-        await TrackRouteAsync(ChatAgentFactory.DataIntelligenceAgentName, "", ct);
+        await TrackRouteAsync(ChatAgentFactory.DataIntelligenceAgentName, "entered", ct);
         var intelligence = await _caller.CallAgentAsync(
             ChatAgentFactory.DataIntelligenceAgentName,
             synthesisPrompt,
@@ -591,7 +595,7 @@ USER REQUEST:
 
         var checkedAnswer = await RunPpiSafeAsync(userText, intelligenceText, ct);
 
-        await TrackRouteAsync(ChatAgentFactory.DataIntelligenceAgentName, "", ct);
+        await TrackRouteAsync(ChatAgentFactory.DataIntelligenceAgentName, "entered", ct);
         return await MaybeAttachDecisionCandidateAsync(
             userText,
             checkedAnswer,
@@ -632,7 +636,7 @@ USER REQUEST:
 
         var executivePrompt = BuildExecutiveSynthesisPrompt(userText, finalSupportText);
 
-        await TrackRouteAsync(ChatAgentFactory.ExecutiveInsightAgentName, "", ct);
+        await TrackRouteAsync(ChatAgentFactory.ExecutiveInsightAgentName, "entered", ct);
         var executive = await _caller.CallAgentAsync(
             ChatAgentFactory.ExecutiveInsightAgentName,
             executivePrompt,
@@ -647,7 +651,7 @@ USER REQUEST:
 
         var checkedAnswer = await RunPpiSafeAsync(userText, executiveText, ct);
 
-        await TrackRouteAsync(ChatAgentFactory.ExecutiveInsightAgentName, "", ct);
+        await TrackRouteAsync(ChatAgentFactory.ExecutiveInsightAgentName, "entered", ct);
         return await MaybeAttachDecisionCandidateAsync(
             userText,
             checkedAnswer,
@@ -666,9 +670,9 @@ USER REQUEST:
 
         var historicalPrompt = BuildForecastSupportDataPrompt(userText, request);
 
-        await TrackRouteAsync(ChatAgentFactory.DataExplorerAgentName, "", ct);
+        await TrackRouteAsync(ChatAgentFactory.DataExplorerAgentName, "entered", ct);
         var support = await _caller.CallAgentAsync(
-            ChatAgentFactory.DataExplorerAgentName,
+            ChatAgentFactory.SqlAgentName,
             historicalPrompt,
             cancellationToken: ct);
 
@@ -679,7 +683,7 @@ USER REQUEST:
             var retryPrompt = BuildForecastSupportDataPrompt(userText, request, stricter: true);
 
             support = await _caller.CallAgentAsync(
-                ChatAgentFactory.DataExplorerAgentName,
+                ChatAgentFactory.SqlAgentName,
                 retryPrompt,
                 cancellationToken: ct);
 
@@ -710,7 +714,7 @@ USER REQUEST:
 
         var checkedAnswer = await RunPpiSafeAsync(userText, markdown, ct);
 
-        await TrackRouteAsync(ChatAgentFactory.ForecastingAgentName, "", ct);
+        await TrackRouteAsync(ChatAgentFactory.ForecastingAgentName, "completed", ct);
         return await MaybeAttachDecisionCandidateAsync(
             userText,
             checkedAnswer,
@@ -728,7 +732,7 @@ USER REQUEST:
         var request = AnomalyRequestParser.Parse(userText);
         var supportPrompt = AnomalySupportPromptBuilder.Build(request);
 
-        await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "", ct);
+        await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "entered", ct);
         //await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "segmentation support-data request", ct);
         //await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "what-if support-data request", ct);
         var support = await _caller.CallAgentAsync(
@@ -741,7 +745,7 @@ USER REQUEST:
         if (LooksLikeClarifyingQuestion(supportText))
         {
             var retryPrompt = AnomalySupportPromptBuilder.Build(request, stricter: true);
-            await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "", ct);
+            await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "entered", ct);
             //await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "segmentation support-data retry", ct);
             //await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "what-if support-data retry", ct);
             support = await _caller.CallAgentAsync(
@@ -779,7 +783,7 @@ USER REQUEST:
 
         var checkedAnswer = await RunPpiSafeAsync(userText, markdown, ct);
 
-        await TrackRouteAsync(ChatAgentFactory.AnomalyDetectionAgentName, "", ct);
+        await TrackRouteAsync(ChatAgentFactory.AnomalyDetectionAgentName, "completed", ct);
         return await MaybeAttachDecisionCandidateAsync(
             userText,
             checkedAnswer,
@@ -794,11 +798,11 @@ USER REQUEST:
         string routerReason,
         CancellationToken ct)
     {
-        await TrackRouteAsync(ChatAgentFactory.DataSegmentationAgentName, "", ct);
+        await TrackRouteAsync(ChatAgentFactory.DataSegmentationAgentName, "entered", ct);
 
         var supportPrompt = BuildSegmentationSupportDataPrompt(userText);
 
-        await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "", ct);
+        await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "entered", ct);
         var support = await _caller.CallAgentAsync(
             ChatAgentFactory.SqlAgentName,
             supportPrompt,
@@ -812,7 +816,7 @@ USER REQUEST:
 
             var retryPrompt = BuildSegmentationSupportDataPrompt(userText, stricter: true);
 
-            await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "", ct);
+            await TrackRouteAsync(ChatAgentFactory.SqlAgentName, "entered", ct);
             support = await _caller.CallAgentAsync(
                 ChatAgentFactory.SqlAgentName,
                 retryPrompt,
@@ -844,13 +848,78 @@ USER REQUEST:
 
         var checkedAnswer = await RunPpiSafeAsync(userText, markdown, ct);
 
-        await TrackRouteAsync("DataSegmentationAgent", "", ct);
+        await TrackRouteAsync("DataSegmentationAgent", "completed", ct);
         return await MaybeAttachDecisionCandidateAsync(
             userText,
             checkedAnswer,
             "DataSegmentationAgent",
             routerReason + " (grounded via SqlAgent)",
             ct);
+    }
+
+    private static bool ShouldForceSqlDataExplorer(string? userText)
+    {
+        if (string.IsNullOrWhiteSpace(userText))
+            return false;
+
+        var t = userText.Trim().ToLowerInvariant();
+
+        if (LooksLikeSchemaAdviceQuestion(t))
+            return false;
+
+        return true;
+    }
+
+    private static bool LooksLikeSchemaAdviceQuestion(string t)
+    {
+        if (string.IsNullOrWhiteSpace(t))
+            return false;
+
+        t = t.ToLowerInvariant().Trim();
+
+        // Explicit schema/advice phrases
+        if (t.Contains("what tables") ||
+            t.Contains("which tables") ||
+            t.Contains("how tables relate") ||
+            t.Contains("schema") ||
+            t.Contains("relationship") ||
+            t.Contains("relationships") ||
+            t.Contains("what joins") ||
+            t.Contains("which joins") ||
+            t.Contains("what columns") ||
+            t.Contains("which columns") ||
+            t.Contains("how to analyze"))
+            return true;
+
+        // Profiling / description style requests
+        if (t.StartsWith("profile ") ||
+            t.StartsWith("describe ") ||
+            t.StartsWith("explain ") ||
+            t.StartsWith("show columns") ||
+            t.StartsWith("table structure") ||
+            t.StartsWith("metadata") ||
+            t.StartsWith("ddl"))
+            return true;
+
+        // Conceptual relationship questions
+        if ((t.Contains("how ") && t.Contains(" relate ")) ||
+            (t.Contains("how ") && t.Contains(" relates ")) ||
+            (t.Contains("how ") && t.Contains(" related ")) ||
+            (t.Contains("how ") && t.Contains(" connect ")) ||
+            (t.Contains("how ") && t.Contains(" connected ")) ||
+            (t.Contains("how ") && t.Contains(" impact ")) ||
+            (t.Contains("how ") && t.Contains(" impacts ")) ||
+            (t.Contains("how ") && t.Contains(" tie to ")) ||
+            (t.Contains("how ") && t.Contains(" linked to ")))
+            return true;
+
+        // Schema-qualified table reference
+        if (System.Text.RegularExpressions.Regex.IsMatch(
+                t,
+                @"\b[a-z0-9_]+\.[a-z0-9_]+\b"))
+            return true;
+
+        return false;
     }
 
     private static string BuildSegmentationSupportDataPrompt(string userText, bool stricter = false)
