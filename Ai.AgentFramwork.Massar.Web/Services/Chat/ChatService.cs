@@ -471,7 +471,8 @@ public sealed class ChatService
             {
                 var limitText = budget.MonthlyLimitUsd.HasValue ? $"${budget.MonthlyLimitUsd.Value:0.####}" : "your configured limit";
                 var spentText = $"${budget.CurrentMonthSpendUsd:0.####}";
-                var budgetMessage = $"I can’t run another AI call for this account because the monthly AI cost limit has been reached. Current month spend: **{spentText}**. Configured limit: **{limitText}**.";
+                var nextResetUtc = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1).AddMonths(1);
+                var budgetMessage = $"Your monthly AI usage limit has been reached. Current month spend: **{spentText}**. Configured limit: **{limitText}**. It will reset next month on **{nextResetUtc:MMMM 1, yyyy}**.";
                 _session.AddMessage(new ChatMessage(ChatRole.Assistant, budgetMessage));
                 await _repo.AppendMessageAsync(
                     conversationId,

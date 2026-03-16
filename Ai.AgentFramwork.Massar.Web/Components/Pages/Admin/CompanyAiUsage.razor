@@ -1,0 +1,152 @@
+﻿@page "/admin/company-ai-usage"
+@attribute [Authorize]
+@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.EntityFrameworkCore
+
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    <MudStack Spacing="3">
+        <MudStack>
+            <MudText Typo="Typo.h4">Global / Company AI Usage</MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">Overall AI cost across all users by month.</MudText>
+        </MudStack>
+
+        <MudGrid Spacing="3">
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-4" Outlined="true">
+                    <MudText Typo="Typo.subtitle1">Current Month</MudText>
+                    <MudText Typo="Typo.h4">@_currentMonthTotal.ToString("C")</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Total AI spend for the current month.</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-4" Outlined="true">
+                    <MudText Typo="Typo.subtitle1">6-Month Total</MudText>
+                    <MudText Typo="Typo.h4">@_sixMonthTotal.ToString("C")</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Combined spend across the displayed months.</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-4" Outlined="true">
+                    <MudText Typo="Typo.subtitle1">Active Users This Month</MudText>
+                    <MudText Typo="Typo.h4">@_activeUsersThisMonth</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Users who generated AI usage in the current month.</MudText>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <MudPaper Class="pa-4" Outlined="true">
+            <MudStack Spacing="2">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                    <MudText Typo="Typo.h6">Monthly Cost Trend</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Last 6 months across all users.</MudText>
+                </MudStack>
+
+                <MudChart T="double" ChartType="ChartType.Bar"
+                          ChartSeries="_monthlySeries"
+                          ChartLabels="_monthLabels"
+                          Width="100%"
+                          Height="350px" />
+            </MudStack>
+        </MudPaper>
+
+        <MudPaper Class="pa-4" Outlined="true">
+            <MudStack Spacing="2">
+                <MudText Typo="Typo.h6">Top Users This Month</MudText>
+                <MudTable Items="_topUsersThisMonth" Dense="true" Hover="true" Bordered="true" Striped="true">
+                    <HeaderContent>
+                        <MudTh>User</MudTh>
+                        <MudTh>Email</MudTh>
+                        <MudTh>Spend</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="User">@context.UserName</MudTd>
+                        <MudTd DataLabel="Email">@context.Email</MudTd>
+                        <MudTd DataLabel="Spend">@context.TotalSpendUsd.ToString("C")</MudTd>
+                    </RowTemplate>
+                </MudTable>
+            </MudStack>
+        </MudPaper>
+    </MudStack>
+</MudContainer>
+
+@code {
+    private string[] _monthLabels = Array.Empty<string>();
+    private List<ChartSeries<double>> _monthlySeries = new();
+    private decimal _currentMonthTotal;
+    private decimal _sixMonthTotal;
+    private int _activeUsersThisMonth;
+    private List<TopUserRow> _topUsersThisMonth = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var today = DateTime.UtcNow;
+        var monthStart = new DateTime(today.Year, today.Month, 1);
+        var chartStart = monthStart.AddMonths(-5);
+        var nextMonthStart = monthStart.AddMonths(1);
+
+        var monthly = await db.AiTokenUsageLogs
+            .AsNoTracking()
+            .Where(x => x.CreatedOn >= chartStart)
+            .GroupBy(x => new { x.CreatedOn.Year, x.CreatedOn.Month })
+            .Select(g => new
+            {
+                g.Key.Year,
+                g.Key.Month,
+                Total = g.Sum(x => x.TotalCostUsd ?? 0m)
+            })
+            .ToListAsync();
+
+        var labels = new List<string>();
+        var values = new List<double>();
+
+        for (var i = 0; i < 6; i++)
+        {
+            var date = chartStart.AddMonths(i);
+            var total = monthly
+                .Where(x => x.Year == date.Year && x.Month == date.Month)
+                .Select(x => x.Total)
+                .FirstOrDefault();
+
+            labels.Add(date.ToString("MMM yyyy"));
+            values.Add((double)total);
+            _sixMonthTotal += total;
+
+            if (date.Year == monthStart.Year && date.Month == monthStart.Month)
+                _currentMonthTotal = total;
+        }
+
+        _monthLabels = labels.ToArray();
+        _monthlySeries = new List<ChartSeries<double>>
+        {
+            new() { Name = "Company AI Spend", Data = values.ToArray() }
+        };
+
+        _topUsersThisMonth = await db.AiTokenUsageLogs
+            .AsNoTracking()
+            .Where(x => x.CreatedOn >= monthStart && x.CreatedOn < nextMonthStart)
+            .GroupBy(x => new { x.UserId, UserName = x.User.UserName, x.User.Email })
+            .Select(g => new TopUserRow
+            {
+                UserName = g.Key.UserName ?? g.Key.UserId,
+                Email = g.Key.Email ?? string.Empty,
+                TotalSpendUsd = g.Sum(x => x.TotalCostUsd ?? 0m)
+            })
+            .OrderByDescending(x => x.TotalSpendUsd)
+            .Take(10)
+            .ToListAsync();
+
+        _activeUsersThisMonth = _topUsersThisMonth.Count;
+    }
+
+    private sealed class TopUserRow
+    {
+        public string UserName { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
+        public decimal TotalSpendUsd { get; set; }
+    }
+}

@@ -1,0 +1,183 @@
+﻿@page "/admin/ai-pricing"
+@attribute [Authorize]
+@using Ai.AgentFramwork.Massar.Web.Components.Pages.Documents
+@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.EntityFrameworkCore
+
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject IDialogService Dialog
+@inject ISnackbar Snackbar
+
+<MudPaper Class="pa-4">
+    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+        <MudStack Spacing="0">
+            <MudText Typo="Typo.h4">AI Pricing</MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">Create, update, and delete model pricing records.</MudText>
+        </MudStack>
+
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="AddAsync">
+            Add Pricing
+        </MudButton>
+    </MudStack>
+
+    <MudDivider Class="my-3" />
+
+    <MudTable Items="_rows" Hover="true" Dense="true" Bordered="true" Striped="true" Loading="_loading">
+        <HeaderContent>
+            <MudTh>Model</MudTh>
+            <MudTh>Input / 1M</MudTh>
+            <MudTh>Cached Input / 1M</MudTh>
+            <MudTh>Output / 1M</MudTh>
+            <MudTh>Active</MudTh>
+            <MudTh>Created On</MudTh>
+            <MudTh></MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd DataLabel="Model">@context.ModelName</MudTd>
+            <MudTd DataLabel="Input / 1M">@context.InputCostPer1M.ToString("0.########")</MudTd>
+            <MudTd DataLabel="Cached Input / 1M">@(context.CachedInputCostPer1M?.ToString("0.########") ?? "-")</MudTd>
+            <MudTd DataLabel="Output / 1M">@context.OutputCostPer1M.ToString("0.########")</MudTd>
+            <MudTd DataLabel="Active">
+                <MudChip T="bool" Color="@(context.IsActive? Color.Success: Color.Default)" Variant="Variant.Outlined" Size="Size.Small">
+                    @(context.IsActive ? "Yes" : "No")
+                </MudChip>
+            </MudTd>
+            <MudTd DataLabel="Created On">@context.CreatedOn.ToString("yyyy-MM-dd")</MudTd>
+            <MudTd>
+                <MudStack Row="true" Spacing="1" Justify="Justify.FlexEnd">
+                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => EditAsync(context)" />
+                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="() => DeleteAsync(context)" />
+                </MudStack>
+            </MudTd>
+        </RowTemplate>
+    </MudTable>
+</MudPaper>
+
+@code {
+    private List<AiPricing> _rows = new();
+    private bool _loading;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            _rows = await db.AiPricings
+                .AsNoTracking()
+                .OrderBy(x => x.ModelName)
+                .ToListAsync();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task AddAsync()
+    {
+        var dialog = await Dialog.ShowAsync<AiPricingDialog>(
+            "Add AI Pricing",
+            new DialogOptions { CloseButton = true, FullWidth = true, MaxWidth = MaxWidth.Small });
+
+        var result = await dialog.Result;
+        if (result?.Canceled != false)
+            return;
+
+        var dto = (AiPricingDialog.AiPricingUpsertDto)result.Data;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var exists = await db.AiPricings.AnyAsync(x => x.ModelName == dto.ModelName);
+        if (exists)
+        {
+            Snackbar.Add("A pricing record with this model name already exists.", Severity.Error);
+            return;
+        }
+
+        db.AiPricings.Add(new AiPricing
+        {
+            ModelName = dto.ModelName,
+            InputCostPer1M = dto.InputCostPer1M,
+            CachedInputCostPer1M = dto.CachedInputCostPer1M,
+            OutputCostPer1M = dto.OutputCostPer1M,
+            IsActive = dto.IsActive,
+            CreatedOn = DateTime.UtcNow
+        });
+
+        await db.SaveChangesAsync();
+        Snackbar.Add("AI pricing created.", Severity.Success);
+        await LoadAsync();
+    }
+
+    private async Task EditAsync(AiPricing row)
+    {
+        var parameters = new DialogParameters
+        {
+            ["EditModelName"] = row.ModelName,
+            ["EditInputCostPer1M"] = row.InputCostPer1M,
+            ["EditCachedInputCostPer1M"] = row.CachedInputCostPer1M,
+            ["EditOutputCostPer1M"] = row.OutputCostPer1M,
+            ["EditIsActive"] = row.IsActive
+        };
+
+        var dialog = await Dialog.ShowAsync<AiPricingDialog>(
+            "Edit AI Pricing",
+            parameters,
+            new DialogOptions { CloseButton = true, FullWidth = true, MaxWidth = MaxWidth.Small });
+
+        var result = await dialog.Result;
+        if (result?.Canceled != false)
+            return;
+
+        var dto = (AiPricingDialog.AiPricingUpsertDto)result.Data;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var tracked = await db.AiPricings.FirstOrDefaultAsync(x => x.ModelName == row.ModelName);
+        if (tracked is null)
+            return;
+
+        tracked.InputCostPer1M = dto.InputCostPer1M;
+        tracked.CachedInputCostPer1M = dto.CachedInputCostPer1M;
+        tracked.OutputCostPer1M = dto.OutputCostPer1M;
+        tracked.IsActive = dto.IsActive;
+
+        await db.SaveChangesAsync();
+        Snackbar.Add("AI pricing updated.", Severity.Success);
+        await LoadAsync();
+    }
+
+    private async Task DeleteAsync(AiPricing row)
+    {
+        var parameters = new DialogParameters
+        {
+            ["ContentText"] = $"Delete AI pricing for '{row.ModelName}'?",
+            ["ButtonText"] = "Delete",
+            ["Color"] = Color.Error
+        };
+
+        var dialog = await Dialog.ShowAsync<ConfirmDialog>(
+            "Delete AI Pricing",
+            parameters,
+            new DialogOptions { CloseButton = true, MaxWidth = MaxWidth.ExtraSmall, FullWidth = true });
+
+        var result = await dialog.Result;
+        if (result?.Canceled != false)
+            return;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var tracked = await db.AiPricings.FirstOrDefaultAsync(x => x.ModelName == row.ModelName);
+        if (tracked is null)
+            return;
+
+        db.AiPricings.Remove(tracked);
+        await db.SaveChangesAsync();
+        Snackbar.Add("AI pricing deleted.", Severity.Success);
+        await LoadAsync();
+    }
+}

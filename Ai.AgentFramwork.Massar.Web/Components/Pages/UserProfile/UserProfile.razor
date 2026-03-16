@@ -1,0 +1,350 @@
+﻿@page "/profile"
+@attribute [Authorize]
+@using System.Security.Claims
+@using Ai.AgentFramwork.Massar.Web.DBModels
+@using Ai.AgentFramwork.Massar.Web.Models
+@using Ai.AgentFramwork.Massar.Web.Services.Security
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.EntityFrameworkCore
+
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject AuthenticationStateProvider AuthStateProvider
+@inject IPasswordService Passwords
+@inject ISnackbar Snackbar
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    <MudStack Spacing="3">
+        <MudStack>
+            <MudText Typo="Typo.h4">User Profile</MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">Manage your password and review your AI usage.</MudText>
+        </MudStack>
+
+        <MudTabs Rounded="true" PanelClass="pt-4">
+            <MudTabPanel>
+                <TabContent>
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                        <MudIcon Icon="@Icons.Material.Filled.ManageAccounts" Size="Size.Small" />
+                        <MudText>Account</MudText>
+                    </MudStack>
+                </TabContent>
+                <ChildContent>
+                    <MudGrid Spacing="3">
+                        <MudItem xs="12" md="4">
+                            <MudPaper Class="pa-4" Outlined="true">
+                                <MudStack Spacing="2">
+                                    <MudText Typo="Typo.h6">Profile</MudText>
+
+                                    @if (_user is null)
+                                    {
+                                        <MudSkeleton Height="28px" Width="70%" />
+                                        <MudSkeleton Height="24px" Width="85%" />
+                                        <MudSkeleton Height="24px" Width="55%" />
+                                    }
+                                    else
+                                    {
+                                        <MudText><b>User Name:</b> @_user.UserName</MudText>
+                                        <MudText><b>Email:</b> @_user.Email</MudText>
+                                        <MudText><b>Name:</b> @FullName</MudText>
+                                        <MudText><b>Status:</b> @(_user.IsActive ? "Active" : "Inactive")</MudText>
+                                        <MudText><b>Monthly Limit:</b> @FormatCurrency(_monthlyLimitUsd)</MudText>
+                                        <MudText><b>Current Month Spend:</b> @FormatCurrency(_currentMonthSpendUsd)</MudText>
+                                    }
+                                </MudStack>
+                            </MudPaper>
+                        </MudItem>
+
+                        <MudItem xs="12" md="8">
+                            <MudPaper Class="pa-4" Outlined="true">
+                                <MudStack Spacing="2">
+                                    <MudText Typo="Typo.h6">Reset Password</MudText>
+                                    <MudText Typo="Typo.body2" Color="Color.Secondary">Enter your current password, then choose a new one.</MudText>
+
+                                    <MudTextField Label="Current Password"
+                                                  @bind-Value="_currentPassword"
+                                                  InputType="InputType.Password"
+                                                  Immediate="true"
+                                                  Required="true" />
+
+                                    <MudTextField Label="New Password"
+                                                  @bind-Value="_newPassword"
+                                                  InputType="InputType.Password"
+                                                  Immediate="true"
+                                                  Required="true" />
+
+                                    <MudTextField Label="Confirm New Password"
+                                                  @bind-Value="_confirmPassword"
+                                                  InputType="InputType.Password"
+                                                  Immediate="true"
+                                                  Required="true" />
+
+                                    @if (!string.IsNullOrWhiteSpace(_passwordError))
+                                    {
+                                        <MudAlert Severity="Severity.Error" Dense="true">@_passwordError</MudAlert>
+                                    }
+
+                                    <MudStack Row="true" Justify="Justify.FlexEnd">
+                                        <MudButton Variant="Variant.Filled"
+                                                   Color="Color.Primary"
+                                                   Disabled="@_savingPassword"
+                                                   OnClick="ResetPasswordAsync">
+                                            @(_savingPassword ? "Saving..." : "Reset Password")
+                                        </MudButton>
+                                    </MudStack>
+                                </MudStack>
+                            </MudPaper>
+                        </MudItem>
+                    </MudGrid>
+                </ChildContent>
+            </MudTabPanel>
+
+            <MudTabPanel>
+                <TabContent>
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                        <MudIcon Icon="@Icons.Material.Filled.Insights" Size="Size.Small" />
+                        <MudText>Usage</MudText>
+                    </MudStack>
+                </TabContent>
+                <ChildContent>
+                    <MudGrid Spacing="3">
+                        <MudItem xs="12" md="4">
+                            <MudPaper Class="pa-4" Outlined="true">
+                                <MudText Typo="Typo.subtitle1">This Month</MudText>
+                                <MudText Typo="Typo.h4">@FormatCurrency(_currentMonthSpendUsd)</MudText>
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">AI usage cost in the current month.</MudText>
+                            </MudPaper>
+                        </MudItem>
+
+                        <MudItem xs="12" md="4">
+                            <MudPaper Class="pa-4" Outlined="true">
+                                <MudText Typo="Typo.subtitle1">Average Monthly Spend</MudText>
+                                <MudText Typo="Typo.h4">@FormatCurrency(_averageMonthlySpendUsd)</MudText>
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Average across the displayed months.</MudText>
+                            </MudPaper>
+                        </MudItem>
+
+                        <MudItem xs="12" md="4">
+                            <MudPaper Class="pa-4" Outlined="true">
+                                <MudText Typo="Typo.subtitle1">Limit Remaining</MudText>
+                                <MudText Typo="Typo.h4">@FormatCurrency(_remainingThisMonthUsd)</MudText>
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Remaining before your monthly AI limit is reached.</MudText>
+                            </MudPaper>
+                        </MudItem>
+                    </MudGrid>
+
+                    <MudPaper Class="pa-4 mt-3" Outlined="true">
+                        <MudStack Spacing="2">
+                            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                <MudText Typo="Typo.h6">Monthly Limit Usage</MudText>
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">@UsageSummaryText</MudText>
+                            </MudStack>
+
+                            <MudProgressLinear Value="@_usagePercent"
+                                               Min="0"
+                                               Max="100"
+                                               Rounded="true"
+                                               Size="Size.Large"
+                                               Color="@UsageProgressColor" />
+                        </MudStack>
+                    </MudPaper>
+
+                    <MudPaper Class="pa-4 mt-3" Outlined="true">
+                        <MudStack Spacing="2">
+                            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                <MudText Typo="Typo.h6">Monthly Usage</MudText>
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Last 6 months of AI spend.</MudText>
+                            </MudStack>
+
+                            <MudChart T="double" ChartType="ChartType.Line"
+                                      ChartSeries="_monthlyUsageSeries"
+                                      ChartLabels="_monthLabels"
+                                      Width="100%"
+                                      Height="350px" />
+                        </MudStack>
+                    </MudPaper>
+                </ChildContent>
+            </MudTabPanel>
+        </MudTabs>
+    </MudStack>
+</MudContainer>
+
+@code {
+    private AppUser? _user;
+    private string? _userId;
+
+    private string _currentPassword = string.Empty;
+    private string _newPassword = string.Empty;
+    private string _confirmPassword = string.Empty;
+    private string? _passwordError;
+    private bool _savingPassword;
+
+    private decimal _currentMonthSpendUsd;
+    private decimal? _monthlyLimitUsd;
+    private decimal _averageMonthlySpendUsd;
+    private decimal _remainingThisMonthUsd;
+    private double _usagePercent;
+
+    private string[] _monthLabels = Array.Empty<string>();
+    private List<ChartSeries<double>> _monthlyUsageSeries = new();
+
+    private string FullName => string.Join(" ", new[] { _user?.FirstName, _user?.LastName }.Where(x => !string.IsNullOrWhiteSpace(x))).Trim();
+
+    private Color UsageProgressColor => _usagePercent >= 100d
+        ? Color.Error
+        : _usagePercent >= 80d
+            ? Color.Warning
+            : Color.Success;
+
+    private string UsageSummaryText => _monthlyLimitUsd.HasValue && _monthlyLimitUsd.Value > 0m
+        ? $"{_usagePercent:N0}% of {FormatCurrency(_monthlyLimitUsd)} used"
+        : "No monthly limit configured.";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var principal = authState.User;
+
+        _userId = GetClaimValue(principal, AppClaimTypes.UserId)
+                  ?? GetClaimValue(principal, ClaimTypes.NameIdentifier)
+                  ?? GetClaimValue(principal, "sub");
+
+        if (string.IsNullOrWhiteSpace(_userId))
+            return;
+
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_userId))
+            return;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        _user = await db.AppUsers
+            .AsNoTracking()
+            .Include(x => x.AiUserMonthlyCostLimit)
+            .FirstOrDefaultAsync(x => x.UserId == _userId);
+
+        _monthlyLimitUsd = _user?.AiUserMonthlyCostLimit is { IsActive: true } limit
+            ? limit.MonthlyLimitUsd
+            : null;
+
+        var today = DateTime.UtcNow;
+        var monthStart = new DateTime(today.Year, today.Month, 1);
+        var chartStart = monthStart.AddMonths(-5);
+
+        var monthly = await db.AiTokenUsageLogs
+            .AsNoTracking()
+            .Where(x => x.UserId == _userId && x.CreatedOn >= chartStart)
+            .GroupBy(x => new { x.CreatedOn.Year, x.CreatedOn.Month })
+            .Select(g => new
+            {
+                g.Key.Year,
+                g.Key.Month,
+                Total = g.Sum(x => x.TotalCostUsd ?? 0m)
+            })
+            .ToListAsync();
+
+        var points = new List<double>();
+        var labels = new List<string>();
+        decimal runningTotal = 0m;
+
+        for (var i = 0; i < 6; i++)
+        {
+            var date = chartStart.AddMonths(i);
+            var value = monthly
+                .Where(x => x.Year == date.Year && x.Month == date.Month)
+                .Select(x => x.Total)
+                .FirstOrDefault();
+
+            labels.Add(date.ToString("MMM yyyy"));
+            points.Add((double)value);
+            runningTotal += value;
+
+            if (date.Year == monthStart.Year && date.Month == monthStart.Month)
+                _currentMonthSpendUsd = value;
+        }
+
+        _monthLabels = labels.ToArray();
+        _monthlyUsageSeries = new List<ChartSeries<double>>
+        {
+            new() { Name = "Monthly AI Spend", Data = points.ToArray() }
+        };
+
+        _averageMonthlySpendUsd = runningTotal / 6m;
+        _remainingThisMonthUsd = _monthlyLimitUsd.HasValue
+            ? Math.Max(0m, _monthlyLimitUsd.Value - _currentMonthSpendUsd)
+            : 0m;
+
+        _usagePercent = _monthlyLimitUsd.HasValue && _monthlyLimitUsd.Value > 0m
+            ? (double)Math.Min(100m, Math.Round((_currentMonthSpendUsd / _monthlyLimitUsd.Value) * 100m, 2))
+            : 0d;
+    }
+
+    private async Task ResetPasswordAsync()
+    {
+        _passwordError = null;
+
+        if (string.IsNullOrWhiteSpace(_userId))
+        {
+            _passwordError = "Unable to resolve the current user.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_currentPassword) || string.IsNullOrWhiteSpace(_newPassword) || string.IsNullOrWhiteSpace(_confirmPassword))
+        {
+            _passwordError = "All password fields are required.";
+            return;
+        }
+
+        if (_newPassword.Length < 6)
+        {
+            _passwordError = "The new password must be at least 6 characters.";
+            return;
+        }
+
+        if (_newPassword != _confirmPassword)
+        {
+            _passwordError = "The new password and confirmation do not match.";
+            return;
+        }
+
+        _savingPassword = true;
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var user = await db.AppUsers.FirstOrDefaultAsync(x => x.UserId == _userId);
+            if (user is null)
+            {
+                _passwordError = "User not found.";
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(user.PasswordHash) || !Passwords.Verify(_currentPassword, user.PasswordHash))
+            {
+                _passwordError = "Current password is incorrect.";
+                return;
+            }
+
+            user.PasswordHash = Passwords.Hash(_newPassword);
+            await db.SaveChangesAsync();
+
+            _currentPassword = string.Empty;
+            _newPassword = string.Empty;
+            _confirmPassword = string.Empty;
+            Snackbar.Add("Password updated successfully.", Severity.Success);
+        }
+        finally
+        {
+            _savingPassword = false;
+        }
+    }
+
+    private static string? GetClaimValue(ClaimsPrincipal principal, string claimType)
+        => principal?.FindFirst(claimType)?.Value;
+
+    private static string FormatCurrency(decimal? value)
+        => value.HasValue ? value.Value.ToString("C") : "Not Set";
+}
