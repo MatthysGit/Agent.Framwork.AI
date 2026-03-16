@@ -23,6 +23,10 @@ public partial class AppUser
 
     public int? RoleId { get; set; }
 
+    public virtual ICollection<AiTokenUsageLog> AiTokenUsageLogs { get; set; } = new List<AiTokenUsageLog>();
+
+    public virtual AiUserMonthlyCostLimit? AiUserMonthlyCostLimit { get; set; }
+
     public virtual ICollection<ChatConversation> ChatConversations { get; set; } = new List<ChatConversation>();
 
     public virtual Role? Role { get; set; }

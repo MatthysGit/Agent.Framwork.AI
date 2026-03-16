@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Ai.AgentFramwork.Massar.Web.Services.Chat;
+using Ai.AgentFramwork.Massar.Web.Models;
 
 namespace Ai.AgentFramwork.Massar.Web.Services.Chat;
 
@@ -44,10 +44,10 @@ public sealed class ExcelVisualAidsBuilder
             ct.ThrowIfCancellationRequested();
 
             if (c is null) continue;
-            if (string.IsNullOrWhiteSpace(c.Base64Png)) continue;
+            if (string.IsNullOrWhiteSpace(c.Base64)) continue;
 
             byte[] bytes;
-            try { bytes = Convert.FromBase64String(c.Base64Png); }
+            try { bytes = Convert.FromBase64String(c.Base64); }
             catch { continue; }
 
             if (bytes.Length == 0) continue;
@@ -55,12 +55,12 @@ public sealed class ExcelVisualAidsBuilder
             // Persist as an assistant attachment for THIS conversation so it can be fetched
             // by the UI and (optionally) included in ImproveConversation email later.
             var safeTitle = string.IsNullOrWhiteSpace(c.Title) ? $"Chart {i}" : c.Title.Trim();
-            var fileName = $"excel-chart-{i}.png";
+            var fileName = string.IsNullOrWhiteSpace(c.FileName) ? $"excel-chart-{i}.png" : c.FileName;
 
             var info = await _attachments.SaveAssistantFileAsync(
                 conversationId,
                 fileName,
-                contentType: "image/png",
+                contentType: string.IsNullOrWhiteSpace(c.ContentType) ? "image/png" : c.ContentType,
                 bytes: bytes,
                 ct: ct);
 
@@ -88,8 +88,3 @@ public sealed class ExcelVisualAidsBuilder
         => s.Replace("\r", " ").Replace("\n", " ").Trim();
 }
 
-/// <summary>
-/// Minimal chart artifact contract (matches the one used by ExcelAnalyticsTool).
-/// If you already have this type elsewhere, delete this block and use your existing one.
-/// </summary>
-public sealed record ExcelChartArtifact(string Type, string Title, string Base64Png);

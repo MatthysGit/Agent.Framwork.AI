@@ -24,6 +24,8 @@ public sealed class DocumentEditTool
     private readonly IUnifiedDocumentSearchService _search;
     private readonly IChatClientFactory _chatClientFactory;
     private readonly IAgentModelSelector _modelSelector;
+    private readonly IAiUsageLogger? _aiUsageLogger;
+    private readonly IAiUsageContextAccessor? _aiUsageContextAccessor;
 
     public const string DefaultEmbeddingModel = "text-embedding-3-large";
     private const int MaxCommentsPerDocument = 60;
@@ -41,13 +43,17 @@ public sealed class DocumentEditTool
         AuthenticationStateProvider auth,
         IUnifiedDocumentSearchService search,
         IChatClientFactory chatClientFactory,
-        IAgentModelSelector modelSelector)
+        IAgentModelSelector modelSelector,
+        IAiUsageLogger? aiUsageLogger = null,
+        IAiUsageContextAccessor? aiUsageContextAccessor = null)
     {
         _dbFactory = dbFactory;
         _auth = auth;
         _search = search;
         _chatClientFactory = chatClientFactory;
         _modelSelector = modelSelector;
+        _aiUsageLogger = aiUsageLogger;
+        _aiUsageContextAccessor = aiUsageContextAccessor;
     }
 
     [Description("Finds a matching Word document in the current conversation, reviews the full document, adds multiple Word comments, and returns the reviewed file as an attachment.")]
@@ -209,8 +215,39 @@ public sealed class DocumentEditTool
 
             try
             {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 var response = await chatClient.CompleteChatAsync(messages, cancellationToken: ct);
+                sw.Stop();
                 var text = response.Value?.Content?.FirstOrDefault()?.Text?.Trim() ?? "[]";
+
+                if (_aiUsageLogger is not null)
+                {
+                    var ctx = _aiUsageContextAccessor?.GetCurrent();
+                    var usageModelKey = _modelSelector.GetModelForAgent(ChatAgentFactory.DocumentEditAgentName);
+                    _aiUsageContextAccessor?.SetAgent(ChatAgentFactory.DocumentEditAgentName, usageModelKey);
+                    var snapshot = AiUsageReflection.ExtractSnapshot(response);
+                    var promptText = string.Concat(messages.OfType<OpenAI.Chat.ChatMessage>().Select(m => m.Content.FirstOrDefault()?.Text ?? string.Empty));
+                    var estimatedPrompt = snapshot.PromptTokens ?? AiTokenEstimator.EstimateTextTokens(promptText);
+                    var estimatedCompletion = snapshot.CompletionTokens ?? AiTokenEstimator.EstimateTextTokens(text);
+
+                    await _aiUsageLogger.LogAsync(new AiUsageLogRequest(
+                        AgentName: ChatAgentFactory.DocumentEditAgentName,
+                        ModelName: usageModelKey,
+                        UserId: ctx?.UserId,
+                        ConversationId: ctx?.ConversationId,
+                        MessageId: ctx?.MessageId,
+                        PromptTokens: snapshot.PromptTokens ?? estimatedPrompt,
+                        CompletionTokens: snapshot.CompletionTokens ?? estimatedCompletion,
+                        TotalTokens: snapshot.TotalTokens ?? (estimatedPrompt + estimatedCompletion),
+                        CachedInputTokens: snapshot.CachedInputTokens,
+                        ReasoningTokens: snapshot.ReasoningTokens,
+                        RequestId: snapshot.RequestId,
+                        ClientRequestId: ctx?.ClientRequestId,
+                        LatencyMs: (int)sw.ElapsedMilliseconds,
+                        Succeeded: true,
+                        ErrorMessage: null), ct);
+                }
+
                 var parsed = ParseReviewComments(text);
                 if (parsed.Count > 0)
                     results.AddRange(parsed);

@@ -13,6 +13,12 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<Agent> Agents { get; set; }
 
+    public virtual DbSet<AiPricing> AiPricings { get; set; }
+
+    public virtual DbSet<AiTokenUsageLog> AiTokenUsageLogs { get; set; }
+
+    public virtual DbSet<AiUserMonthlyCostLimit> AiUserMonthlyCostLimits { get; set; }
+
     public virtual DbSet<AppUser> AppUsers { get; set; }
 
     public virtual DbSet<ChatAttachmentBlob> ChatAttachmentBlobs { get; set; }
@@ -77,6 +83,26 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<UserTeamRole> UserTeamRoles { get; set; }
 
+    public virtual DbSet<v_AiCost_PerAgent> v_AiCost_PerAgents { get; set; }
+
+    public virtual DbSet<v_AiCost_PerConversation> v_AiCost_PerConversations { get; set; }
+
+    public virtual DbSet<v_AiCost_PerDay> v_AiCost_PerDays { get; set; }
+
+    public virtual DbSet<v_AiCost_PerUser> v_AiCost_PerUsers { get; set; }
+
+    public virtual DbSet<v_AiCost_PerUserMonth> v_AiCost_PerUserMonths { get; set; }
+
+    public virtual DbSet<vwAiCostPerAgent> vwAiCostPerAgents { get; set; }
+
+    public virtual DbSet<vwAiCostPerConversation> vwAiCostPerConversations { get; set; }
+
+    public virtual DbSet<vwAiCostPerDay> vwAiCostPerDays { get; set; }
+
+    public virtual DbSet<vwAiCostPerUser> vwAiCostPerUsers { get; set; }
+
+    public virtual DbSet<vwAiUserCurrentMonthSpend> vwAiUserCurrentMonthSpends { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Agent>(entity =>
@@ -91,6 +117,89 @@ public partial class AppDbContext : DbContext
                 .IsUnicode(false);
             entity.Property(e => e.CreatedOn).HasDefaultValueSql("(sysdatetime())");
             entity.Property(e => e.IsActive).HasDefaultValue(true);
+        });
+
+        modelBuilder.Entity<AiPricing>(entity =>
+        {
+            entity.HasKey(e => e.ModelName);
+
+            entity.ToTable("AiPricing");
+
+            entity.Property(e => e.ModelName)
+                .HasMaxLength(50)
+                .IsUnicode(false);
+            entity.Property(e => e.CachedInputCostPer1M).HasColumnType("decimal(18, 8)");
+            entity.Property(e => e.CreatedOn).HasDefaultValueSql("(sysutcdatetime())", "DF_AiPricing_CreatedOn");
+            entity.Property(e => e.InputCostPer1M).HasColumnType("decimal(18, 8)");
+            entity.Property(e => e.IsActive).HasDefaultValue(true, "DF_AiPricing_IsActive");
+            entity.Property(e => e.OutputCostPer1M).HasColumnType("decimal(18, 8)");
+        });
+
+        modelBuilder.Entity<AiTokenUsageLog>(entity =>
+        {
+            entity.ToTable("AiTokenUsageLog");
+
+            entity.HasIndex(e => new { e.AgentName, e.CreatedOn }, "IX_AiTokenUsageLog_AgentName_CreatedOn").IsDescending(false, true);
+
+            entity.HasIndex(e => new { e.ConversationId, e.CreatedOn }, "IX_AiTokenUsageLog_ConversationId_CreatedOn").IsDescending(false, true);
+
+            entity.HasIndex(e => e.CreatedOn, "IX_AiTokenUsageLog_CreatedOn").IsDescending();
+
+            entity.HasIndex(e => new { e.ModelName, e.CreatedOn }, "IX_AiTokenUsageLog_ModelName_CreatedOn").IsDescending(false, true);
+
+            entity.HasIndex(e => new { e.UserId, e.CreatedOn }, "IX_AiTokenUsageLog_UserId_CreatedOn").IsDescending(false, true);
+
+            entity.Property(e => e.AiTokenUsageLogId).HasDefaultValueSql("(newid())", "DF_AiTokenUsageLog_Id");
+            entity.Property(e => e.AgentName)
+                .HasMaxLength(50)
+                .IsUnicode(false);
+            entity.Property(e => e.ClientRequestId).HasMaxLength(200);
+            entity.Property(e => e.CreatedOn).HasDefaultValueSql("(sysutcdatetime())", "DF_AiTokenUsageLog_CreatedOn");
+            entity.Property(e => e.InputCostUsd).HasColumnType("decimal(18, 8)");
+            entity.Property(e => e.ModelName)
+                .HasMaxLength(50)
+                .IsUnicode(false);
+            entity.Property(e => e.OutputCostUsd).HasColumnType("decimal(18, 8)");
+            entity.Property(e => e.RequestId).HasMaxLength(200);
+            entity.Property(e => e.Succeeded).HasDefaultValue(true, "DF_AiTokenUsageLog_Succeeded");
+            entity.Property(e => e.TotalCostUsd).HasColumnType("decimal(18, 8)");
+
+            entity.HasOne(d => d.AgentNameNavigation).WithMany(p => p.AiTokenUsageLogs)
+                .HasForeignKey(d => d.AgentName)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK_AiTokenUsageLog_Agents");
+
+            entity.HasOne(d => d.Conversation).WithMany(p => p.AiTokenUsageLogs)
+                .HasForeignKey(d => d.ConversationId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK_AiTokenUsageLog_ChatConversations");
+
+            entity.HasOne(d => d.ModelNameNavigation).WithMany(p => p.AiTokenUsageLogs)
+                .HasForeignKey(d => d.ModelName)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK_AiTokenUsageLog_AiPricing");
+
+            entity.HasOne(d => d.User).WithMany(p => p.AiTokenUsageLogs)
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK_AiTokenUsageLog_AppUsers");
+        });
+
+        modelBuilder.Entity<AiUserMonthlyCostLimit>(entity =>
+        {
+            entity.HasKey(e => e.UserId);
+
+            entity.ToTable("AiUserMonthlyCostLimit");
+
+            entity.Property(e => e.CreatedOn).HasDefaultValueSql("(sysutcdatetime())", "DF_AiUserMonthlyCostLimit_CreatedOn");
+            entity.Property(e => e.IsActive).HasDefaultValue(true, "DF_AiUserMonthlyCostLimit_IsActive");
+            entity.Property(e => e.MonthlyLimitUsd).HasColumnType("decimal(18, 6)");
+            entity.Property(e => e.UpdatedOn).HasDefaultValueSql("(sysutcdatetime())", "DF_AiUserMonthlyCostLimit_UpdatedOn");
+
+            entity.HasOne(d => d.User).WithOne(p => p.AiUserMonthlyCostLimit)
+                .HasForeignKey<AiUserMonthlyCostLimit>(d => d.UserId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK_AiUserMonthlyCostLimit_AppUsers");
         });
 
         modelBuilder.Entity<AppUser>(entity =>
@@ -731,6 +840,116 @@ public partial class AppDbContext : DbContext
                 .HasForeignKey(d => d.UserId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("FK_UserTeamRoles_AppUsers");
+        });
+
+        modelBuilder.Entity<v_AiCost_PerAgent>(entity =>
+        {
+            entity
+                .HasNoKey()
+                .ToView("v_AiCost_PerAgent");
+
+            entity.Property(e => e.AgentName)
+                .HasMaxLength(50)
+                .IsUnicode(false);
+            entity.Property(e => e.TotalCostUsd).HasColumnType("decimal(38, 8)");
+        });
+
+        modelBuilder.Entity<v_AiCost_PerConversation>(entity =>
+        {
+            entity
+                .HasNoKey()
+                .ToView("v_AiCost_PerConversation");
+
+            entity.Property(e => e.TotalCostUsd).HasColumnType("decimal(38, 8)");
+            entity.Property(e => e.UserId).HasMaxLength(450);
+        });
+
+        modelBuilder.Entity<v_AiCost_PerDay>(entity =>
+        {
+            entity
+                .HasNoKey()
+                .ToView("v_AiCost_PerDay");
+
+            entity.Property(e => e.TotalCostUsd).HasColumnType("decimal(38, 8)");
+        });
+
+        modelBuilder.Entity<v_AiCost_PerUser>(entity =>
+        {
+            entity
+                .HasNoKey()
+                .ToView("v_AiCost_PerUser");
+
+            entity.Property(e => e.TotalCostUsd).HasColumnType("decimal(38, 8)");
+            entity.Property(e => e.UserId).HasMaxLength(450);
+        });
+
+        modelBuilder.Entity<v_AiCost_PerUserMonth>(entity =>
+        {
+            entity
+                .HasNoKey()
+                .ToView("v_AiCost_PerUserMonth");
+
+            entity.Property(e => e.TotalCostUsd).HasColumnType("decimal(38, 8)");
+            entity.Property(e => e.UserId).HasMaxLength(450);
+        });
+
+        modelBuilder.Entity<vwAiCostPerAgent>(entity =>
+        {
+            entity
+                .HasNoKey()
+                .ToView("vwAiCostPerAgent");
+
+            entity.Property(e => e.AgentName)
+                .HasMaxLength(100)
+                .IsUnicode(false);
+            entity.Property(e => e.FirstCallUtc).HasPrecision(3);
+            entity.Property(e => e.LastCallUtc).HasPrecision(3);
+            entity.Property(e => e.TotalCostUsd).HasColumnType("decimal(38, 8)");
+        });
+
+        modelBuilder.Entity<vwAiCostPerConversation>(entity =>
+        {
+            entity
+                .HasNoKey()
+                .ToView("vwAiCostPerConversation");
+
+            entity.Property(e => e.FirstCallUtc).HasPrecision(3);
+            entity.Property(e => e.LastCallUtc).HasPrecision(3);
+            entity.Property(e => e.TotalCostUsd).HasColumnType("decimal(38, 8)");
+            entity.Property(e => e.UserId).HasMaxLength(450);
+        });
+
+        modelBuilder.Entity<vwAiCostPerDay>(entity =>
+        {
+            entity
+                .HasNoKey()
+                .ToView("vwAiCostPerDay");
+
+            entity.Property(e => e.TotalCostUsd).HasColumnType("decimal(38, 8)");
+        });
+
+        modelBuilder.Entity<vwAiCostPerUser>(entity =>
+        {
+            entity
+                .HasNoKey()
+                .ToView("vwAiCostPerUser");
+
+            entity.Property(e => e.FirstCallUtc).HasPrecision(3);
+            entity.Property(e => e.LastCallUtc).HasPrecision(3);
+            entity.Property(e => e.TotalCostUsd).HasColumnType("decimal(38, 8)");
+            entity.Property(e => e.UserId).HasMaxLength(450);
+        });
+
+        modelBuilder.Entity<vwAiUserCurrentMonthSpend>(entity =>
+        {
+            entity
+                .HasNoKey()
+                .ToView("vwAiUserCurrentMonthSpend");
+
+            entity.Property(e => e.CurrentMonthSpendUsd).HasColumnType("decimal(18, 8)");
+            entity.Property(e => e.MonthlyCostLimitUsd).HasColumnType("decimal(18, 6)");
+            entity.Property(e => e.RemainingUsd).HasColumnType("decimal(18, 8)");
+            entity.Property(e => e.UserId).HasMaxLength(450);
         });
 
         OnModelCreatingPartial(modelBuilder);

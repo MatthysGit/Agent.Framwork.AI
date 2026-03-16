@@ -333,6 +333,9 @@ public sealed class ChatConversationRepository : IChatConversationRepository
                 .Where(m => m.ConversationId == conversationId)
                 .ExecuteDeleteAsync(ct);
 
+
+
+
             // ---- Delete conversation ----
 
             await db.ChatConversations

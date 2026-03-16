@@ -1,4 +1,5 @@
-﻿using Ai.AgentFramwork.Massar.Web.DBModels;
+﻿using Ai.AgentFramwork.Massar.Web.Agents;
+using Ai.AgentFramwork.Massar.Web.DBModels;
 using Ai.AgentFramwork.Massar.Web.Models;
 using Ai.AgentFramwork.Massar.Web.Services.Chat;
 using Ai.AgentFramwork.Massar.Web.Services.DocumentSeach;
@@ -22,7 +23,10 @@ public sealed class DocumentSearchTool
     private readonly IUnifiedDocumentSearchService _search;
     private readonly ChatSession _session;
     private readonly IChatClient _llm;
-    
+    private readonly IAgentModelSelector _modelSelector;
+    private readonly IAiUsageLogger? _aiUsageLogger;
+    private readonly IAiUsageContextAccessor? _aiUsageContextAccessor;
+
     // IMPORTANT: Must match the EmbeddingModel stored in BOTH embedding tables
     public const string DefaultEmbeddingModel = "text-embedding-3-large";
 
@@ -31,13 +35,19 @@ public sealed class DocumentSearchTool
         AuthenticationStateProvider auth,
         IUnifiedDocumentSearchService search,
         ChatSession session,
-        IChatClient llm)
+        IChatClient llm,
+        IAgentModelSelector modelSelector,
+        IAiUsageLogger? aiUsageLogger = null,
+        IAiUsageContextAccessor? aiUsageContextAccessor = null)
     {
         _dbFactory = dbFactory;
         _auth = auth;
         _search = search;
-        _session = session;  
+        _session = session;
         _llm = llm;
+        _modelSelector = modelSelector;
+        _aiUsageLogger = aiUsageLogger;
+        _aiUsageContextAccessor = aiUsageContextAccessor;
     }
 
     //[Description("Search both global and scoped documents for the current conversation. Returns JSON with text + attachments.")]
@@ -203,7 +213,9 @@ Evidence:
 
         // The exact API shape varies slightly by package version.
         // This pattern works for Microsoft.Extensions.AI's IChatClient:
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var response = await _llm.GetResponseAsync(messages, cancellationToken: ct);
+        sw.Stop();
 
         // Extract assistant text robustly
         var text = string.Concat(
@@ -212,7 +224,36 @@ Evidence:
                 .OfType<TextContent>()
                 .Select(t => t.Text));
 
-        return text.Trim();
+        text = text.Trim();
+
+        if (_aiUsageLogger is not null)
+        {
+            var ctx = _aiUsageContextAccessor?.GetCurrent();
+            var modelKey = _modelSelector.GetModelForAgent(ChatAgentFactory.DocumentSearchAgentName);
+            _aiUsageContextAccessor?.SetAgent(ChatAgentFactory.DocumentSearchAgentName, modelKey);
+            var snapshot = AiUsageReflection.ExtractSnapshot(response);
+            var estimatedPrompt = snapshot.PromptTokens ?? AiTokenEstimator.EstimateMessagesTokens(messages);
+            var estimatedCompletion = snapshot.CompletionTokens ?? AiTokenEstimator.EstimateTextTokens(text);
+
+            await _aiUsageLogger.LogAsync(new AiUsageLogRequest(
+                AgentName: ChatAgentFactory.DocumentSearchAgentName,
+                ModelName: modelKey,
+                UserId: ctx?.UserId,
+                ConversationId: ctx?.ConversationId,
+                MessageId: ctx?.MessageId,
+                PromptTokens: snapshot.PromptTokens ?? estimatedPrompt,
+                CompletionTokens: snapshot.CompletionTokens ?? estimatedCompletion,
+                TotalTokens: snapshot.TotalTokens ?? (estimatedPrompt + estimatedCompletion),
+                CachedInputTokens: snapshot.CachedInputTokens,
+                ReasoningTokens: snapshot.ReasoningTokens,
+                RequestId: snapshot.RequestId,
+                ClientRequestId: ctx?.ClientRequestId,
+                LatencyMs: (int)sw.ElapsedMilliseconds,
+                Succeeded: true,
+                ErrorMessage: null), ct);
+        }
+
+        return text;
     }
 
     private static string CleanExtractedText(string raw)
@@ -243,8 +284,8 @@ Evidence:
         return s.Length <= maxChars ? s : s[..maxChars] + "…";
     }
 
-   
-    
+
+
 
     private static string FormatDocSearchTextAsMarkdown(string rawText)
     {
@@ -316,7 +357,7 @@ Evidence:
 
         return sb.ToString().Trim();
     }
-    
+
 
     private async Task<int[]> GetRoleIdsAsync(CancellationToken ct = default)
     {

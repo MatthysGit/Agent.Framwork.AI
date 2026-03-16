@@ -43,6 +43,8 @@ public sealed class ChatAgentFactory
 
     // ✅ used to create logger without having a _decisionLogger field
     private readonly ILoggerFactory _loggerFactory;
+    private readonly IAiUsageLogger? _aiUsageLogger;
+    private readonly IAiUsageContextAccessor? _aiUsageContextAccessor;
 
     public ChatAgentFactory(
         IConfiguration configuration,
@@ -50,7 +52,9 @@ public sealed class ChatAgentFactory
         IDbContextFactory<AppDbContext> dbFactory,
         IChatClientFactory chatClientFactory,
         IAgentModelSelector modelSelector,
-        ILoggerFactory loggerFactory) // ✅ add this instead of ILogger<DecisionTrackerService>
+        ILoggerFactory loggerFactory,
+        IAiUsageLogger? aiUsageLogger = null,
+        IAiUsageContextAccessor? aiUsageContextAccessor = null) // ✅ add this instead of ILogger<DecisionTrackerService>
     {
         _configuration = configuration;
         _registry = registry;
@@ -60,6 +64,8 @@ public sealed class ChatAgentFactory
         _modelSelector = modelSelector;
 
         _loggerFactory = loggerFactory;
+        _aiUsageLogger = aiUsageLogger;
+        _aiUsageContextAccessor = aiUsageContextAccessor;
     }
 
     // --- Pipeline builder (AI Router + deterministic execution) ---
@@ -129,7 +135,9 @@ public sealed class ChatAgentFactory
             _registry,
             _modelSelector,
             historyProvider: () => ChatMessageWindow.ToSafeTextOnlyMessages(session.Messages, takeLast: 40),
-            onRoute: onRoute
+            onRoute: onRoute,
+            aiUsageLogger: _aiUsageLogger,
+            aiUsageContextAccessor: _aiUsageContextAccessor
         );
 
         // ✅ Build DecisionTracker here if not supplied (caller is not DI-registered)
@@ -145,7 +153,10 @@ public sealed class ChatAgentFactory
 
         var router = new RouterAgent(
             routerClient,
-            historyProvider: () => ChatMessageWindow.ToSafeTextOnlyMessages(session.Messages, takeLast: 40)
+            historyProvider: () => ChatMessageWindow.ToSafeTextOnlyMessages(session.Messages, takeLast: 40),
+            aiUsageLogger: _aiUsageLogger,
+            aiUsageContextAccessor: _aiUsageContextAccessor,
+            modelKey: routerModelKey
         );
 
         Guid GetConversationIdGuid() => session.ActiveConversationId ?? Guid.Empty;

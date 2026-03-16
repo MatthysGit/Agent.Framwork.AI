@@ -34,15 +34,21 @@ public sealed class ImproveConversationService : IImproveConversationService
     private readonly IChatClientFactory _chatClientFactory;
     private readonly IAgentModelSelector _modelSelector;
     private readonly ChatService _chatService;
+    private readonly IAiUsageLogger? _aiUsageLogger;
+    private readonly IAiUsageContextAccessor? _aiUsageContextAccessor;
 
     public ImproveConversationService(
         IChatClientFactory chatClientFactory,
         IAgentModelSelector modelSelector,
-        ChatService chatService)
+        ChatService chatService,
+        IAiUsageLogger? aiUsageLogger = null,
+        IAiUsageContextAccessor? aiUsageContextAccessor = null)
     {
         _chatClientFactory = chatClientFactory;
         _modelSelector = modelSelector;
         _chatService = chatService;
+        _aiUsageLogger = aiUsageLogger;
+        _aiUsageContextAccessor = aiUsageContextAccessor;
     }
 
     public async Task<ImproveConversationResultDto> ImproveAsync(
@@ -97,11 +103,40 @@ Return plain Markdown (no JSON). Keep it professional.
         };
 
         // ✅ Rate limit resiliency
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var resp = await OpenAiRateLimitHelpers.Retry429Async(
             innerCt => chat.CompleteChatAsync(messages, cancellationToken: innerCt),
             ct);
+        sw.Stop();
 
         var md = resp.Value?.Content?.FirstOrDefault()?.Text?.Trim() ?? "";
+
+        if (_aiUsageLogger is not null)
+        {
+            var ctx = _aiUsageContextAccessor?.GetCurrent();
+            _aiUsageContextAccessor?.SetAgent(ImproveAgentName, modelKey);
+            var snapshot = AiUsageReflection.ExtractSnapshot(resp);
+            var promptText = string.Join("\n", messages.Select(m => string.Concat(m.Content.Select(c => c.Text ?? string.Empty))));
+            var estimatedPrompt = snapshot.PromptTokens ?? AiTokenEstimator.EstimateTextTokens(promptText);
+            var estimatedCompletion = snapshot.CompletionTokens ?? AiTokenEstimator.EstimateTextTokens(md);
+
+            await _aiUsageLogger.LogAsync(new AiUsageLogRequest(
+                AgentName: ImproveAgentName,
+                ModelName: modelKey,
+                UserId: userId,
+                ConversationId: conversationId,
+                MessageId: null,
+                PromptTokens: snapshot.PromptTokens ?? estimatedPrompt,
+                CompletionTokens: snapshot.CompletionTokens ?? estimatedCompletion,
+                TotalTokens: snapshot.TotalTokens ?? (estimatedPrompt + estimatedCompletion),
+                CachedInputTokens: snapshot.CachedInputTokens,
+                ReasoningTokens: snapshot.ReasoningTokens,
+                RequestId: snapshot.RequestId,
+                ClientRequestId: ctx?.ClientRequestId,
+                LatencyMs: (int)sw.ElapsedMilliseconds,
+                Succeeded: true,
+                ErrorMessage: null), ct);
+        }
 
         if (string.IsNullOrWhiteSpace(md))
             md = "Hi team,\n\nHere is a summary of our conversation.\n";

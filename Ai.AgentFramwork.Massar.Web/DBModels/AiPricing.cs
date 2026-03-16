@@ -3,11 +3,15 @@ using System.Collections.Generic;
 
 namespace Ai.AgentFramwork.Massar.Web.DBModels;
 
-public partial class Agent
+public partial class AiPricing
 {
-    public string AgentName { get; set; } = null!;
+    public string ModelName { get; set; } = null!;
 
-    public string AgentModel { get; set; } = null!;
+    public decimal InputCostPer1M { get; set; }
+
+    public decimal? CachedInputCostPer1M { get; set; }
+
+    public decimal OutputCostPer1M { get; set; }
 
     public bool IsActive { get; set; }
 

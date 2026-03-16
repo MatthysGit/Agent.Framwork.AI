@@ -17,6 +17,8 @@ public partial class ChatConversation
 
     public bool IsArchived { get; set; }
 
+    public virtual ICollection<AiTokenUsageLog> AiTokenUsageLogs { get; set; } = new List<AiTokenUsageLog>();
+
     public virtual ICollection<ChatConversationAttachmentIngest> ChatConversationAttachmentIngests { get; set; } = new List<ChatConversationAttachmentIngest>();
 
     public virtual ICollection<ChatMessage> ChatMessages { get; set; } = new List<ChatMessage>();

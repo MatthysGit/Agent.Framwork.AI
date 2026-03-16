@@ -1,5 +1,9 @@
 ﻿// File: Tools/ExcelAnalyticsTool.cs
+using Ai.AgentFramwork.Massar.Web.Agents;
 using Ai.AgentFramwork.Massar.Web.Models;
+using ModelExcelChartArtifact = Ai.AgentFramwork.Massar.Web.Models.ExcelChartArtifact;
+using ModelExcelAnalysisAgentResponse = Ai.AgentFramwork.Massar.Web.Models.ExcelAnalysisAgentResponse;
+using Ai.AgentFramwork.Massar.Web.Services.Chat;
 using Ai.AgentFramwork.Massar.Web.Services.Chat.charts;
 using Ai.AgentFramwork.Massar.Web.Services.ExcelServices;
 using Microsoft.Extensions.AI;
@@ -21,6 +25,9 @@ public sealed class ExcelAnalyticsTool
     private readonly IChatClient _llm;
     private readonly Ai.AgentFramwork.Massar.Web.Services.Chat.ChatAttachmentStore _attachmentStore;
     private readonly Ai.AgentFramwork.Massar.Web.Services.Chat.ChatSession _session;
+    private readonly IAgentModelSelector _modelSelector;
+    private readonly IAiUsageLogger? _aiUsageLogger;
+    private readonly IAiUsageContextAccessor? _aiUsageContextAccessor;
 
     public ExcelAnalyticsTool(
         IUploadedExcelReader reader,
@@ -28,7 +35,10 @@ public sealed class ExcelAnalyticsTool
         BarChartRenderer bar,
         IChatClient llm,
         Ai.AgentFramwork.Massar.Web.Services.Chat.ChatAttachmentStore attachmentStore,
-        Ai.AgentFramwork.Massar.Web.Services.Chat.ChatSession session)
+        Ai.AgentFramwork.Massar.Web.Services.Chat.ChatSession session,
+        IAgentModelSelector modelSelector,
+        IAiUsageLogger? aiUsageLogger = null,
+        IAiUsageContextAccessor? aiUsageContextAccessor = null)
     {
         _reader = reader;
         _line = line;
@@ -36,6 +46,9 @@ public sealed class ExcelAnalyticsTool
         _llm = llm;
         _attachmentStore = attachmentStore;
         _session = session;
+        _modelSelector = modelSelector;
+        _aiUsageLogger = aiUsageLogger;
+        _aiUsageContextAccessor = aiUsageContextAccessor;
     }
 
     [Description("Analyze an uploaded Excel/CSV attachment by attachmentId. Returns JSON with markdown text + email-safe HTML + optional chart artifacts.")]
@@ -45,10 +58,10 @@ public sealed class ExcelAnalyticsTool
         CancellationToken ct = default)
     {
         if (attachmentId == Guid.Empty)
-            return JsonSerializer.Serialize(new ExcelAnalysisAgentResponse(
+            return JsonSerializer.Serialize(new ModelExcelAnalysisAgentResponse(
                 Text: "Missing attachmentId.",
                 Html: BuildEmptyHtml("Missing attachmentId."),
-                Charts: Array.Empty<ExcelChartArtifact>()));
+                Charts: Array.Empty<ModelExcelChartArtifact>()));
 
         question ??= string.Empty;
 
@@ -59,18 +72,18 @@ public sealed class ExcelAnalyticsTool
         }
         catch (Exception ex)
         {
-            return JsonSerializer.Serialize(new ExcelAnalysisAgentResponse(
+            return JsonSerializer.Serialize(new ModelExcelAnalysisAgentResponse(
                 Text: $"Failed to read spreadsheet: {ex.Message}",
                 Html: BuildEmptyHtml("Failed to read spreadsheet."),
-                Charts: Array.Empty<ExcelChartArtifact>()));
+                Charts: Array.Empty<ModelExcelChartArtifact>()));
         }
 
         if (table.Columns.Count == 0)
         {
-            return JsonSerializer.Serialize(new ExcelAnalysisAgentResponse(
+            return JsonSerializer.Serialize(new ModelExcelAnalysisAgentResponse(
                 Text: "No columns found in the spreadsheet.",
                 Html: BuildEmptyHtml("No columns found."),
-                Charts: Array.Empty<ExcelChartArtifact>()));
+                Charts: Array.Empty<ModelExcelChartArtifact>()));
         }
 
         var rows = table.Rows ?? new List<IReadOnlyList<object?>>();
@@ -96,7 +109,7 @@ public sealed class ExcelAnalyticsTool
 
         var html = BuildDenseHtmlSummary(table, rows, profile, charts);
 
-        var result = new ExcelAnalysisAgentResponse(
+        var result = new ModelExcelAnalysisAgentResponse(
             Text: markdown.Trim(),
             Html: html,
             Charts: charts.ToArray());
@@ -174,9 +187,9 @@ public sealed class ExcelAnalyticsTool
     // ----------------------------
     // Chart generation (simple heuristics)
     // ----------------------------
-    private List<ExcelChartArtifact> BuildDefaultCharts(TabularData table, IReadOnlyList<IReadOnlyList<object?>> rows, List<ColumnProfile> profile)
+    private List<ModelExcelChartArtifact> BuildDefaultCharts(TabularData table, IReadOnlyList<IReadOnlyList<object?>> rows, List<ColumnProfile> profile)
     {
-        var charts = new List<ExcelChartArtifact>();
+        var charts = new List<ModelExcelChartArtifact>();
 
         // Identify columns
         int dateCol = FirstIndex(profile, p => p.Kind == ColumnKind.Date);
@@ -217,7 +230,7 @@ public sealed class ExcelAnalyticsTool
                     xLabels: x,
                     yValues: y);
 
-                charts.Add(new ExcelChartArtifact(
+                charts.Add(new ModelExcelChartArtifact(
                     Title: "Sales Trend",
                     FileName: "excel_trend.png",
                     ContentType: "image/png",
@@ -259,7 +272,7 @@ public sealed class ExcelAnalyticsTool
                     labels: labels,
                     values: values);
 
-                charts.Add(new ExcelChartArtifact(
+                charts.Add(new ModelExcelChartArtifact(
                     Title: "Top Categories",
                     FileName: "excel_top_categories.png",
                     ContentType: "image/png",
@@ -281,7 +294,7 @@ public sealed class ExcelAnalyticsTool
     // Visual Aids (persist charts as chat attachments + embed markdown images)
     // ----------------------------
     private async Task<string> BuildVisualAidsMarkdownAsync(
-        IReadOnlyList<ExcelChartArtifact> charts,
+        IReadOnlyList<ModelExcelChartArtifact> charts,
         string datasetName,
         CancellationToken ct)
     {
@@ -414,7 +427,9 @@ Rules:
             new(ChatRole.User, $"Question:\n{question}\n\nEvidence:\n{evidence}")
         };
 
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var response = await _llm.GetResponseAsync(messages, cancellationToken: ct);
+        sw.Stop();
 
         var text = string.Concat(
             response.Messages
@@ -422,7 +437,36 @@ Rules:
                 .OfType<TextContent>()
                 .Select(t => t.Text));
 
-        return (text ?? string.Empty).Trim();
+        text = (text ?? string.Empty).Trim();
+
+        if (_aiUsageLogger is not null)
+        {
+            var ctx = _aiUsageContextAccessor?.GetCurrent();
+            var modelKey = _modelSelector.GetModelForAgent(ChatAgentFactory.ExcelAnalyticsAgentName);
+            _aiUsageContextAccessor?.SetAgent(ChatAgentFactory.ExcelAnalyticsAgentName, modelKey);
+            var snapshot = AiUsageReflection.ExtractSnapshot(response);
+            var estimatedPrompt = snapshot.PromptTokens ?? AiTokenEstimator.EstimateMessagesTokens(messages);
+            var estimatedCompletion = snapshot.CompletionTokens ?? AiTokenEstimator.EstimateTextTokens(text);
+
+            await _aiUsageLogger.LogAsync(new AiUsageLogRequest(
+                AgentName: ChatAgentFactory.ExcelAnalyticsAgentName,
+                ModelName: modelKey,
+                UserId: ctx?.UserId,
+                ConversationId: ctx?.ConversationId,
+                MessageId: ctx?.MessageId,
+                PromptTokens: snapshot.PromptTokens ?? estimatedPrompt,
+                CompletionTokens: snapshot.CompletionTokens ?? estimatedCompletion,
+                TotalTokens: snapshot.TotalTokens ?? (estimatedPrompt + estimatedCompletion),
+                CachedInputTokens: snapshot.CachedInputTokens,
+                ReasoningTokens: snapshot.ReasoningTokens,
+                RequestId: snapshot.RequestId,
+                ClientRequestId: ctx?.ClientRequestId,
+                LatencyMs: (int)sw.ElapsedMilliseconds,
+                Succeeded: true,
+                ErrorMessage: null), ct);
+        }
+
+        return text;
     }
 
     private static string BuildFallbackMarkdown(TabularData table, IReadOnlyList<IReadOnlyList<object?>> rows, List<ColumnProfile> profile)
@@ -442,7 +486,7 @@ Rules:
     // ----------------------------
     // Email-safe HTML
     // ----------------------------
-    private static string BuildDenseHtmlSummary(TabularData table, IReadOnlyList<IReadOnlyList<object?>> rows, List<ColumnProfile> profile, IReadOnlyList<ExcelChartArtifact> charts)
+    private static string BuildDenseHtmlSummary(TabularData table, IReadOnlyList<IReadOnlyList<object?>> rows, List<ColumnProfile> profile, IReadOnlyList<ModelExcelChartArtifact> charts)
     {
         // Dense, email-safe (tables + inline styles)
         var safeName = HtmlEncode(Safe(table.Name));
