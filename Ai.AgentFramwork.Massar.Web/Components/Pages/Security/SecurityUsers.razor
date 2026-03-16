@@ -14,7 +14,7 @@
     <MudContainer MaxWidth="MaxWidth.False" Class="mt-4">
         <MudGrid Spacing="3">
             <!-- LEFT -->
-            <MudItem xs="12" >
+            <MudItem xs="12">
                 <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
                     <MudText Typo="Typo.subtitle2">Users</MudText>
 
@@ -79,6 +79,12 @@
                             </CellTemplate>
                         </TemplateColumn>
 
+                        <TemplateColumn T="AppUser" Title="Monthly AI Limit" Sortable="false" Filterable="false">
+                            <CellTemplate Context="ctx">
+                                <MudText Typo="Typo.caption">@FormatMonthlyAiLimit(ctx.Item)</MudText>
+                            </CellTemplate>
+                        </TemplateColumn>
+
                         <TemplateColumn T="AppUser"
                                         Title=""
                                         Sortable="false"
@@ -99,7 +105,7 @@
             </MudItem>
 
             <!-- RIGHT -->
-          @*   <MudItem xs="12" md="7">
+            @*   <MudItem xs="12" md="7">
 
                 <MudText Typo="Typo.subtitle2">User Roles</MudText>
                 <MudDivider Class="my-3" />
@@ -235,6 +241,7 @@
         _users = await db.AppUsers
             .AsNoTracking()
             .Include(x => x.Role)
+            .Include(x => x.AiUserMonthlyCostLimit)
             .OrderBy(x => x.UserName)
             .ToListAsync(_cts.Token);
 
@@ -263,6 +270,7 @@
         _users = await db.AppUsers
             .AsNoTracking()
             .Include(x => x.Role)
+            .Include(x => x.AiUserMonthlyCostLimit)
             .OrderBy(x => x.UserName)
             .ToListAsync(_cts.Token);
     }
@@ -306,11 +314,42 @@
             await db.UserSecurityGroups.AddRangeAsync(toAdd, ct);
     }
 
+
+    private static string FormatMonthlyAiLimit(AppUser user)
+    {
+        var value = user.AiUserMonthlyCostLimit?.MonthlyLimitUsd;
+        return value.HasValue ? $"${value.Value:0.##}" : "-";
+    }
+
+    private static async Task UpsertMonthlyAiCostLimitAsync(AppDbContext db, string userId, decimal monthlyLimitUsd, CancellationToken ct)
+    {
+        var existing = await db.AiUserMonthlyCostLimits.FirstOrDefaultAsync(x => x.UserId == userId, ct);
+        if (existing is null)
+        {
+            db.AiUserMonthlyCostLimits.Add(new AiUserMonthlyCostLimit
+            {
+                UserId = userId,
+                MonthlyLimitUsd = monthlyLimitUsd,
+                IsActive = true,
+                CreatedOn = DateTime.UtcNow,
+                UpdatedOn = DateTime.UtcNow
+            });
+            return;
+        }
+
+        existing.MonthlyLimitUsd = monthlyLimitUsd;
+        existing.IsActive = true;
+        existing.UpdatedOn = DateTime.UtcNow;
+    }
+
     private async Task EditUser(string userId)
     {
         await using var db = await DbFactory.CreateDbContextAsync();
 
-        var user = await db.AppUsers.AsNoTracking().FirstOrDefaultAsync(x => x.UserId == userId, _cts.Token);
+        var user = await db.AppUsers
+            .AsNoTracking()
+            .Include(x => x.AiUserMonthlyCostLimit)
+            .FirstOrDefaultAsync(x => x.UserId == userId, _cts.Token);
         if (user is null) return;
 
         var parameters = new DialogParameters
@@ -321,7 +360,8 @@
             ["EditFirstName"] = user.FirstName,
             ["EditLastName"] = user.LastName,
             ["EditIsActive"] = user.IsActive,
-            ["EditRoleId"] = user.RoleId
+            ["EditRoleId"] = user.RoleId,
+            ["EditMonthlyAiCostLimitUsd"] = user.AiUserMonthlyCostLimit?.MonthlyLimitUsd
         };
 
         var dialog = await Dialog.ShowAsync<AddUserDialog>(
@@ -356,6 +396,8 @@
         tracked.LastName = dto.LastName;
         tracked.IsActive = dto.IsActive;
         tracked.RoleId = dto.RoleId;
+
+        await UpsertMonthlyAiCostLimitAsync(db, tracked.UserId, dto.MonthlyAiCostLimitUsd, _cts.Token);
 
         if (!string.IsNullOrWhiteSpace(dto.Password))
             tracked.PasswordHash = _Passwords.Hash(dto.Password);
@@ -411,6 +453,8 @@
 
         db.AppUsers.Add(user);
         await db.SaveChangesAsync(_cts.Token);
+
+        await UpsertMonthlyAiCostLimitAsync(db, user.UserId, dto.MonthlyAiCostLimitUsd, _cts.Token);
 
         // ✅ persist SecurityGroup links for new user
         await SyncUserSecurityGroups(db, user.UserId, dto.SecurityGroupIds, _cts.Token);

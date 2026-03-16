@@ -26,6 +26,15 @@
                        Color="Color.Primary"
                        Label="Active" />
 
+            <MudNumericField T="decimal?"
+                             Label="Monthly AI Cost Limit (USD)"
+                             @bind-Value="MonthlyAiCostLimitUsd"
+                             Required="true"
+                             Immediate="true"
+                             Min="0.000001m"
+                             Step="0.01m"
+                             HideSpinButtons="false" />
+
             <!-- Role (single) -->
             <MudSelect T="int?"
                        Label="Role"
@@ -130,6 +139,7 @@
     [Parameter] public string? EditLastName { get; set; }
     [Parameter] public bool? EditIsActive { get; set; }
     [Parameter] public int? EditRoleId { get; set; }
+    [Parameter] public decimal? EditMonthlyAiCostLimitUsd { get; set; }
 
     private bool _isEdit => !string.IsNullOrWhiteSpace(EditUserId);
 
@@ -140,6 +150,7 @@
     private bool IsActive { get; set; } = true;
 
     private int? RoleId { get; set; }
+    private decimal? MonthlyAiCostLimitUsd { get; set; }
 
     private string Password { get; set; } = "";
     private string ConfirmPassword { get; set; } = "";
@@ -233,6 +244,7 @@
             LastName = EditLastName ?? "";
             IsActive = EditIsActive ?? true;
             RoleId = EditRoleId;
+            MonthlyAiCostLimitUsd = EditMonthlyAiCostLimitUsd;
 
             _changePassword = false;
             Password = "";
@@ -242,6 +254,7 @@
         {
             IsActive = true;
             RoleId = null;
+            MonthlyAiCostLimitUsd = null;
             _changePassword = false;
             Password = "";
             ConfirmPassword = "";
@@ -277,6 +290,12 @@
             return;
         }
 
+        if (!MonthlyAiCostLimitUsd.HasValue || MonthlyAiCostLimitUsd.Value <= 0)
+        {
+            _error = "Monthly AI Cost Limit must be greater than 0.";
+            return;
+        }
+
         // Only require password when adding OR when ChangePassword is ON in edit mode
         if (!_isEdit || ChangePassword)
         {
@@ -301,6 +320,7 @@
             string.IsNullOrWhiteSpace(LastName) ? null : LastName.Trim(),
             IsActive,
             RoleId,
+            MonthlyAiCostLimitUsd.Value,
             !_isEdit || ChangePassword ? Password : null,
             _selectedSecurityGroupIds.ToList()
         )));
@@ -314,6 +334,7 @@
         string? LastName,
         bool IsActive,
         int? RoleId,
+        decimal MonthlyAiCostLimitUsd,
         string? Password,
         IReadOnlyCollection<int> SecurityGroupIds);
 }

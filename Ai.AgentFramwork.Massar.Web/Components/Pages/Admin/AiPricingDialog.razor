@@ -1,0 +1,112 @@
+﻿@using Ai.AgentFramwork.Massar.Web.DBModels
+@using MudBlazor
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h6">@(_isEdit ? "Edit AI Pricing" : "Add AI Pricing")</MudText>
+
+            <MudTextField Label="Model Name"
+                          @bind-Value="ModelName"
+                          Required="true"
+                          Immediate="true"
+                          Disabled="_isEdit" />
+
+            <MudNumericField T="decimal"
+                             Label="Input Cost Per 1M"
+                             @bind-Value="InputCostPer1M"
+                             Min="0"
+                             Required="true"
+                             Immediate="true" />
+
+            <MudNumericField T="decimal?"
+                             Label="Cached Input Cost Per 1M"
+                             @bind-Value="CachedInputCostPer1M"
+                             Min="0"
+                             Immediate="true" />
+
+            <MudNumericField T="decimal"
+                             Label="Output Cost Per 1M"
+                             @bind-Value="OutputCostPer1M"
+                             Min="0"
+                             Required="true"
+                             Immediate="true" />
+
+            <MudSwitch T="bool" @bind-Checked="IsActive" Color="Color.Primary">
+                Active
+            </MudSwitch>
+
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error" Dense="true">@_error</MudAlert>
+            }
+        </MudStack>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public string? EditModelName { get; set; }
+    [Parameter] public decimal? EditInputCostPer1M { get; set; }
+    [Parameter] public decimal? EditCachedInputCostPer1M { get; set; }
+    [Parameter] public decimal? EditOutputCostPer1M { get; set; }
+    [Parameter] public bool? EditIsActive { get; set; }
+
+    private bool _isEdit;
+    private string? _error;
+
+    private string ModelName { get; set; } = string.Empty;
+    private decimal InputCostPer1M { get; set; }
+    private decimal? CachedInputCostPer1M { get; set; }
+    private decimal OutputCostPer1M { get; set; }
+    private bool IsActive { get; set; } = true;
+
+    protected override void OnInitialized()
+    {
+        _isEdit = !string.IsNullOrWhiteSpace(EditModelName);
+        ModelName = EditModelName ?? string.Empty;
+        InputCostPer1M = EditInputCostPer1M ?? 0m;
+        CachedInputCostPer1M = EditCachedInputCostPer1M;
+        OutputCostPer1M = EditOutputCostPer1M ?? 0m;
+        IsActive = EditIsActive ?? true;
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void Save()
+    {
+        _error = null;
+
+        if (string.IsNullOrWhiteSpace(ModelName))
+        {
+            _error = "Model name is required.";
+            return;
+        }
+
+        if (InputCostPer1M < 0 || OutputCostPer1M < 0 || (CachedInputCostPer1M ?? 0m) < 0)
+        {
+            _error = "Cost values cannot be negative.";
+            return;
+        }
+
+        MudDialog.Close(DialogResult.Ok(new AiPricingUpsertDto(
+            ModelName.Trim(),
+            InputCostPer1M,
+            CachedInputCostPer1M,
+            OutputCostPer1M,
+            IsActive)));
+    }
+
+    public sealed record AiPricingUpsertDto(
+        string ModelName,
+        decimal InputCostPer1M,
+        decimal? CachedInputCostPer1M,
+        decimal OutputCostPer1M,
+        bool IsActive);
+}
