@@ -29,6 +29,8 @@ public sealed class ChatService
     private readonly Services.Chat.Pipeline.ChatPipeline _pipeline;
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
     private readonly RouterDecisionTrackerService _routerDecisionTracker;
+    private readonly IAiUsageContextAccessor? _aiUsageContextAccessor;
+    private readonly IAiBudgetGuardService? _aiBudgetGuardService;
 
     // Kept because ChatPipeline calls them, and ChatService still needs to parse/materialize doc attachments.
     private readonly DocumentSearchTool _docSearchTool;
@@ -63,7 +65,9 @@ public sealed class ChatService
         IDbContextFactory<AppDbContext> dbFactory,
         DocumentSearchTool docSearchTool,
         DocumentEditTool docEditTool,
-        RouterDecisionTrackerService? routerDecisionTracker = null)
+        RouterDecisionTrackerService? routerDecisionTracker = null,
+        IAiUsageContextAccessor? aiUsageContextAccessor = null,
+        IAiBudgetGuardService? aiBudgetGuardService = null)
     {
         _auth = auth;
         _session = session;
@@ -73,6 +77,8 @@ public sealed class ChatService
 
         _docSearchTool = docSearchTool;
         _docEditTool = docEditTool;
+        _aiUsageContextAccessor = aiUsageContextAccessor;
+        _aiBudgetGuardService = aiBudgetGuardService;
 
         _routerDecisionTracker = routerDecisionTracker ?? new RouterDecisionTrackerService();
 
@@ -84,7 +90,7 @@ public sealed class ChatService
             docSearchTool,
             docEditTool,
             routerDecisionTracker: _routerDecisionTracker,
-            onRoute: agentName => CurrentAgentName = agentName,
+            onRoute: agentName => { CurrentAgentName = agentName; _aiUsageContextAccessor?.SetAgent(agentName); },
             getOwnerUserId: () => GetMyUserIdAsync().GetAwaiter().GetResult()
         );
     }
@@ -454,6 +460,31 @@ public sealed class ChatService
         }
 
         var conversationId = _session.ActiveConversationId!.Value;
+        _aiUsageContextAccessor?.ClearTurn();
+        _aiUsageContextAccessor?.SetUserAndConversation(userId, conversationId);
+        _aiUsageContextAccessor?.SetClientRequestId(Guid.NewGuid().ToString("N"));
+
+        if (_aiBudgetGuardService is not null)
+        {
+            var budget = await _aiBudgetGuardService.CheckAsync(userId, persistCt);
+            if (!budget.Allowed)
+            {
+                var limitText = budget.MonthlyLimitUsd.HasValue ? $"${budget.MonthlyLimitUsd.Value:0.####}" : "your configured limit";
+                var spentText = $"${budget.CurrentMonthSpendUsd:0.####}";
+                var budgetMessage = $"I can’t run another AI call for this account because the monthly AI cost limit has been reached. Current month spend: **{spentText}**. Configured limit: **{limitText}**.";
+                _session.AddMessage(new ChatMessage(ChatRole.Assistant, budgetMessage));
+                await _repo.AppendMessageAsync(
+                    conversationId,
+                    senderRole: "assistant",
+                    content: budgetMessage,
+                    contentType: "text/markdown",
+                    metadataJson: null,
+                    attachments: Array.Empty<ChatAttachmentInfo>(),
+                    ct: persistCt);
+                yield return _session.Messages;
+                yield break;
+            }
+        }
 
         var userAttachments = await _attachments.SaveUploadedFilesAsync(conversationId, files, streamCt);
         var userText = _attachments.AppendAttachmentLinks(GetText(userMessage), userAttachments);

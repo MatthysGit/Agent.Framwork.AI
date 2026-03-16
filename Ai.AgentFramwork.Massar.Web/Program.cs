@@ -148,6 +148,9 @@ builder.Services.AddScoped<BraveSearchClient>();
 builder.Services.AddScoped<ChatTools>();
 builder.Services.AddScoped<ChatAgentFactory>();
 builder.Services.AddScoped<ChatService>();
+builder.Services.AddScoped<IAiUsageContextAccessor, AiUsageContextAccessor>();
+builder.Services.AddScoped<IAiUsageLogger, AiUsageLogger>();
+builder.Services.AddScoped<IAiBudgetGuardService, AiBudgetGuardService>();
 
 builder.Services.AddScoped<ISchemaIntrospectionService, SchemaIntrospectionService>();
 builder.Services.AddScoped<ISchemaDefinitionAgent, SchemaDefinitionAgent>();
@@ -192,9 +195,9 @@ builder.Services.AddScoped<ForecastRequest>();
 // Excel analytics pipeline
 builder.Services.AddScoped<ISpreadsheetTableExtractor, SpreadsheetTableExtractor>();
 
-builder.Services.AddScoped<IChatAttachmentBlobReader,ChatAttachmentBlobReader>();
+builder.Services.AddScoped<IChatAttachmentBlobReader, ChatAttachmentBlobReader>();
 
-builder.Services.AddScoped<IUploadedExcelReader,UploadedExcelReader>();
+builder.Services.AddScoped<IUploadedExcelReader, UploadedExcelReader>();
 
 // Tool + wrapper
 builder.Services.AddScoped<ExcelAnalyticsTool>();

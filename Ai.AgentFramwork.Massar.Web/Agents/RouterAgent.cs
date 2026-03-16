@@ -3,6 +3,7 @@ using Microsoft.Extensions.AI;
 using OpenAI.Chat;
 using Ai.AgentFramwork.Massar.Web.Services.Chat;
 using System.Linq;
+using System.Reflection;
 
 namespace Ai.AgentFramwork.Massar.Web.Agents;
 
@@ -12,11 +13,22 @@ public sealed class RouterAgent
 
     private readonly ChatClient _chat;
     private readonly Func<IReadOnlyList<Microsoft.Extensions.AI.ChatMessage>> _historyProvider;
+    private readonly IAiUsageLogger? _aiUsageLogger;
+    private readonly IAiUsageContextAccessor? _aiUsageContextAccessor;
+    private readonly string? _modelKey;
 
-    public RouterAgent(ChatClient chat, Func<IReadOnlyList<Microsoft.Extensions.AI.ChatMessage>> historyProvider)
+    public RouterAgent(
+        ChatClient chat,
+        Func<IReadOnlyList<Microsoft.Extensions.AI.ChatMessage>> historyProvider,
+        IAiUsageLogger? aiUsageLogger = null,
+        IAiUsageContextAccessor? aiUsageContextAccessor = null,
+        string? modelKey = null)
     {
         _chat = chat;
         _historyProvider = historyProvider;
+        _aiUsageLogger = aiUsageLogger;
+        _aiUsageContextAccessor = aiUsageContextAccessor;
+        _modelKey = modelKey;
     }
 
     public sealed record RouteResult(
@@ -276,8 +288,36 @@ User message:
 """)
     };
 
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var resp = await _chat.CompleteChatAsync(messages, cancellationToken: ct);
+        sw.Stop();
         var text = resp.Value?.Content?.FirstOrDefault()?.Text?.Trim() ?? "";
+
+        if (_aiUsageLogger is not null)
+        {
+            var ctx = _aiUsageContextAccessor?.GetCurrent();
+            _aiUsageContextAccessor?.SetAgent(ChatAgentFactory.OrchestratorAgentName, _modelKey);
+            var snapshot = AiUsageReflection.ExtractSnapshot(resp);
+            var estimatedPrompt = snapshot.PromptTokens ?? AiTokenEstimator.EstimateTextTokens(system) + AiTokenEstimator.EstimateTextTokens(transcript) + AiTokenEstimator.EstimateTextTokens(userMessage) + 24;
+            var estimatedCompletion = snapshot.CompletionTokens ?? AiTokenEstimator.EstimateTextTokens(text);
+
+            await _aiUsageLogger.LogAsync(new AiUsageLogRequest(
+                AgentName: ChatAgentFactory.OrchestratorAgentName,
+                ModelName: _modelKey ?? ctx?.ModelName ?? "unknown",
+                UserId: ctx?.UserId,
+                ConversationId: ctx?.ConversationId,
+                MessageId: ctx?.MessageId,
+                PromptTokens: snapshot.PromptTokens ?? estimatedPrompt,
+                CompletionTokens: snapshot.CompletionTokens ?? estimatedCompletion,
+                TotalTokens: snapshot.TotalTokens ?? (estimatedPrompt + estimatedCompletion),
+                CachedInputTokens: snapshot.CachedInputTokens,
+                ReasoningTokens: snapshot.ReasoningTokens,
+                RequestId: snapshot.RequestId,
+                ClientRequestId: ctx?.ClientRequestId,
+                LatencyMs: (int)sw.ElapsedMilliseconds,
+                Succeeded: true,
+                ErrorMessage: null), ct);
+        }
 
         try
         {
