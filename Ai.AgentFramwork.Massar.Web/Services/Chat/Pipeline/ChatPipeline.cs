@@ -14,7 +14,7 @@ using System.Text.RegularExpressions;
 
 namespace Ai.AgentFramwork.Massar.Web.Services.Chat.Pipeline;
 
-public sealed partial class ChatPipeline
+public partial class ChatPipeline
 {
     // ----------------------------
     // Dependencies (injected)
@@ -132,6 +132,18 @@ public sealed partial class ChatPipeline
         // ----------------------------
         // Doc tools return JSON unchanged
         // ----------------------------
+        if (r.Agent.Equals(ChatAgentFactory.DocumentSummaryAgentName, StringComparison.OrdinalIgnoreCase))
+        {
+            await TrackRouteAsync(r.Agent, "entered", ct);
+
+            var summaryResult = await ExecuteDocumentSummaryAsync(userText, r.Reason, ct);
+
+            swTotal.Stop();
+            Console.WriteLine($"[PIPELINE] done agent={summaryResult.RoutedAgent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
+
+            return summaryResult;
+        }
+
         if (r.Agent.Equals(ChatAgentFactory.DocumentSearchAgentName, StringComparison.OrdinalIgnoreCase))
         {
             await TrackRouteAsync(r.Agent, "entered", ct);
