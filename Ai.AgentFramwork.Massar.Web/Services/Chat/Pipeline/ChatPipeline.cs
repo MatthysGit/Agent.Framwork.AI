@@ -1,12 +1,15 @@
 ﻿using Ai.AgentFramwork.Massar.Web.Agents;
+using Ai.AgentFramwork.Massar.Web.DBModels;
 using Ai.AgentFramwork.Massar.Web.Services.Anomaly;
 using Ai.AgentFramwork.Massar.Web.Services.Anomaly.Modelss;
 using Ai.AgentFramwork.Massar.Web.Services.Chat;
 using Ai.AgentFramwork.Massar.Web.Services.Chat.DecisionTracking;
+using Ai.AgentFramwork.Massar.Web.Services.Documents;
 using Ai.AgentFramwork.Massar.Web.Services.Forecasting;
 using Ai.AgentFramwork.Massar.Web.Services.WhatIfs;
 using Ai.AgentFramwork.Massar.Web.Services.WhatIfs.Modelss;
 using Ai.AgentFramwork.Massar.Web.Tools;
+using Microsoft.EntityFrameworkCore;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
@@ -24,6 +27,9 @@ public partial class ChatPipeline
     private readonly ChatTools _chartTools;
     private readonly DocumentSearchTool _docSearchTool;
     private readonly DocumentEditTool _docEditTool;
+    private readonly IDbContextFactory<AppDbContext> _dbFactory;
+    private readonly ChatAttachmentStore _attachmentStore;
+    private readonly IDocumentTextExtractor _documentTextExtractor;
     private readonly Func<Guid> _getConversationId;
     private readonly Func<Task<bool>> _canViewCompensationAsync;
     private readonly Func<Task<bool>> _isPrivilegedAsync;
@@ -51,6 +57,9 @@ public partial class ChatPipeline
         ChatTools chartTools,
         DocumentSearchTool docSearchTool,
         DocumentEditTool docEditTool,
+        IDbContextFactory<AppDbContext> dbFactory,
+        ChatAttachmentStore attachmentStore,
+        IDocumentTextExtractor documentTextExtractor,
         Func<Guid> getConversationId,
         Func<Task<bool>> canViewCompensationAsync,
         Func<Task<bool>> isPrivilegedAsync,
@@ -64,6 +73,9 @@ public partial class ChatPipeline
         _chartTools = chartTools;
         _docSearchTool = docSearchTool;
         _docEditTool = docEditTool;
+        _dbFactory = dbFactory;
+        _attachmentStore = attachmentStore;
+        _documentTextExtractor = documentTextExtractor;
         _getConversationId = getConversationId;
         _canViewCompensationAsync = canViewCompensationAsync;
         _isPrivilegedAsync = isPrivilegedAsync;
@@ -156,6 +168,18 @@ public partial class ChatPipeline
             Console.WriteLine($"[PIPELINE] done agent={r.Agent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
 
             return new PipelineResult(json ?? "No relevant information found.", r.Agent, r.Reason);
+        }
+
+        if (r.Agent.Equals(ChatAgentFactory.DocumentRewriteAgentName, StringComparison.OrdinalIgnoreCase))
+        {
+            await TrackRouteAsync(r.Agent, "entered", ct);
+
+            var rewriteResult = await ExecuteDocumentRewriteAsync(userText, r.Reason, ct);
+
+            swTotal.Stop();
+            Console.WriteLine($"[PIPELINE] done agent={rewriteResult.RoutedAgent} mode={r.Mode} totalMs={swTotal.ElapsedMilliseconds}");
+
+            return rewriteResult;
         }
 
         if (r.Agent.Equals(ChatAgentFactory.DocumentEditAgentName, StringComparison.OrdinalIgnoreCase))

@@ -39,7 +39,16 @@ public sealed class RouterAgent
 
     public async Task<RouteResult> RouteAsync(string userMessage, CancellationToken ct = default)
     {
-        // Hard guard: document editing intent always wins.
+        // Hard guard: document rewrite intent must win over document edit intent.
+        if (IsDocumentRewriteIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.DocumentRewriteAgentName,
+                Reason: "Hard-guard: document rewrite request detected.");
+        }
+
+        // Hard guard: document editing intent.
         if (IsDocumentEditIntent(userMessage))
         {
             return new RouteResult(
@@ -205,6 +214,7 @@ Schema (return exactly this shape):
         | \"{{{ChatAgentFactory.SqlAgentName}}}\" 
         | \"{{{ChatAgentFactory.DocumentSearchAgentName}}}\" 
         | \"{{{ChatAgentFactory.DocumentSummaryAgentName}}}\"
+        | \"{{{ChatAgentFactory.DocumentRewriteAgentName}}}\"
         | \"{{{ChatAgentFactory.DocumentEditAgentName}}}\"
         | \"{{{ChatAgentFactory.ExcelAnalyticsAgentName}}}\"
         | \"{{{ChatAgentFactory.ExecutiveInsightAgentName}}}\"
@@ -232,6 +242,12 @@ A2.5) DOCUMENT SUMMARY INTENT:
 - If the user asks to summarize a document/file/report/policy/contract/manual/meeting notes,
   or asks for executive summary, section summaries, action summary, or risks/decisions/next steps
   for a document, choose agent "{{{ChatAgentFactory.DocumentSummaryAgentName}}}".
+
+A2.75) DOCUMENT REWRITE INTENT:
+- If the user asks to rewrite/rephrase/reword a document or attached file in a different tone or style,
+  including executive tone, formal business style, concise version, customer-friendly version, or board-ready version,
+  choose agent "{{{ChatAgentFactory.DocumentRewriteAgentName}}}".
+- Rewrite requests must go to DocumentRewriteAgent, not DocumentEditAgent.
 
 A3) EXECUTIVE INSIGHT INTENT:
 - If the user asks for executive summary, leadership summary, management summary, business overview,
@@ -351,6 +367,9 @@ User message:
                 mode = "agent";
 
             // Final hard-guards (in case model output contradicts intent)
+            if (IsDocumentRewriteIntent(userMessage))
+                return new RouteResult("agent", ChatAgentFactory.DocumentRewriteAgentName, "Hard-guard: document rewrite request detected.");
+
             if (IsDocumentEditIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.DocumentEditAgentName, "Hard-guard: document edit intent detected.");
 
@@ -407,7 +426,7 @@ User message:
         if (string.IsNullOrWhiteSpace(message))
             return false;
 
-        if (IsDocumentEditIntent(message) || IsExcelAnalyticsIntent(message))
+        if (IsExcelAnalyticsIntent(message) || IsDocumentRewriteIntent(message))
             return false;
 
         var t = message.Trim().ToLowerInvariant();
@@ -444,6 +463,87 @@ User message:
             t.Contains("doc") ||
             t.Contains("pdf") ||
             t.Contains("word");
+
+        return docCue;
+    }
+
+    private static bool IsDocumentRewriteIntent(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        if (IsExcelAnalyticsIntent(message))
+            return false;
+
+        var t = message.Trim().ToLowerInvariant();
+
+        var rewriteCue =
+            t.Contains("rewrite") ||
+            t.Contains("rephrase") ||
+            t.Contains("reword") ||
+            t.Contains("polish") ||
+            t.Contains("formal business style") ||
+            t.Contains("formal style") ||
+            t.Contains("concise version") ||
+            t.Contains("make it concise") ||
+            t.Contains("customer-friendly") ||
+            t.Contains("customer friendly") ||
+            t.Contains("board-ready") ||
+            t.Contains("board ready") ||
+            t.Contains("executive tone") ||
+            t.Contains("formal tone") ||
+            t.Contains("rewrite this") ||
+            t.Contains("rewrite the document") ||
+            t.Contains("rewrite the report") ||
+            t.Contains("rewrite this in") ||
+            t.Contains("make this more formal") ||
+            t.Contains("make it more formal") ||
+            t.Contains("make this customer friendly") ||
+            t.Contains("make this customer-friendly") ||
+            t.Contains("make this board ready") ||
+            t.Contains("make this board-ready");
+
+        if (!rewriteCue)
+            return false;
+
+        var styleOnlyCue =
+            t.Contains("formal business style") ||
+            t.Contains("formal style") ||
+            t.Contains("concise version") ||
+            t.Contains("make it concise") ||
+            t.Contains("customer-friendly") ||
+            t.Contains("customer friendly") ||
+            t.Contains("board-ready") ||
+            t.Contains("board ready") ||
+            t.Contains("executive tone") ||
+            t.Contains("formal tone") ||
+            t.Contains("rewrite this in") ||
+            t.Contains("make this more formal") ||
+            t.Contains("make it more formal") ||
+            t.Contains("make this customer friendly") ||
+            t.Contains("make this customer-friendly") ||
+            t.Contains("make this board ready") ||
+            t.Contains("make this board-ready");
+
+        if (styleOnlyCue)
+            return true;
+
+        var docCue =
+            t.Contains("document") ||
+            t.Contains("file") ||
+            t.Contains("report") ||
+            t.Contains("policy") ||
+            t.Contains("contract") ||
+            t.Contains("agreement") ||
+            t.Contains("proposal") ||
+            t.Contains("manual") ||
+            t.Contains("meeting notes") ||
+            t.Contains("minutes") ||
+            t.Contains("memo") ||
+            t.Contains("doc") ||
+            t.Contains("pdf") ||
+            t.Contains("word") ||
+            t.Contains("summary");
 
         return docCue;
     }
@@ -734,6 +834,9 @@ User message:
         if (string.IsNullOrWhiteSpace(message))
             return false;
 
+        if (IsDocumentRewriteIntent(message))
+            return false;
+
         var text = message.Trim();
 
         var hasEditVerb =
@@ -748,7 +851,6 @@ User message:
             text.Contains("track changes", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("suggest changes", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("fix grammar", StringComparison.OrdinalIgnoreCase) ||
-            text.Contains("rewrite", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("modify", StringComparison.OrdinalIgnoreCase);
 
         var hasDocumentContext =
@@ -765,7 +867,6 @@ User message:
             text.Contains("/api/chat/attachments/", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("/documents/files/download/", StringComparison.OrdinalIgnoreCase);
 
-        // Strong direct document-edit phrases should still win immediately.
         var hasStrongDocumentEditPhrase =
             text.Contains("review the attached", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("comment on the document", StringComparison.OrdinalIgnoreCase) ||
