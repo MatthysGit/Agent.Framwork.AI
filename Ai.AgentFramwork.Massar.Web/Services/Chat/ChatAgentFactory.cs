@@ -3,6 +3,7 @@ using Ai.AgentFramwork.Massar.Web.Agents;
 using Ai.AgentFramwork.Massar.Web.DBModels;
 using Ai.AgentFramwork.Massar.Web.Services.Chat.DecisionTracking;
 using Ai.AgentFramwork.Massar.Web.Services.Chat.Pipeline;
+using Ai.AgentFramwork.Massar.Web.Services.Documents;
 using Ai.AgentFramwork.Massar.Web.Tools;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.EntityFrameworkCore;
@@ -27,6 +28,7 @@ public sealed class ChatAgentFactory
     public const string ExcelAnalyticsAgentName = "ExcelAnalyticsAgent";
     public const string DataExplorerAgentName = "DataExplorerAgent";
     public const string DocumentSummaryAgentName = "DocumentSummaryAgent";
+    public const string DocumentRewriteAgentName = "DocumentRewriteAgent";
     public const string ExecutiveInsightAgentName = "ExecutiveInsightAgent";
     public const string DataIntelligenceAgentName = "DataIntelligenceAgent";
     public const string ForecastingAgentName = "ForecastingAgent";
@@ -44,6 +46,8 @@ public sealed class ChatAgentFactory
 
     // ✅ used to create logger without having a _decisionLogger field
     private readonly ILoggerFactory _loggerFactory;
+    private readonly ChatAttachmentStore _attachmentStore;
+    private readonly IDocumentTextExtractor _documentTextExtractor;
     private readonly IAiUsageLogger? _aiUsageLogger;
     private readonly IAiUsageContextAccessor? _aiUsageContextAccessor;
 
@@ -54,6 +58,8 @@ public sealed class ChatAgentFactory
         IChatClientFactory chatClientFactory,
         IAgentModelSelector modelSelector,
         ILoggerFactory loggerFactory,
+        ChatAttachmentStore attachmentStore,
+        IDocumentTextExtractor documentTextExtractor,
         IAiUsageLogger? aiUsageLogger = null,
         IAiUsageContextAccessor? aiUsageContextAccessor = null) // ✅ add this instead of ILogger<DecisionTrackerService>
     {
@@ -65,6 +71,8 @@ public sealed class ChatAgentFactory
         _modelSelector = modelSelector;
 
         _loggerFactory = loggerFactory;
+        _attachmentStore = attachmentStore;
+        _documentTextExtractor = documentTextExtractor;
         _aiUsageLogger = aiUsageLogger;
         _aiUsageContextAccessor = aiUsageContextAccessor;
     }
@@ -97,6 +105,9 @@ public sealed class ChatAgentFactory
 
         _registry.Register(DocumentSummaryAgentName, (sp, chatClient) =>
             new DocumentSummaryAgent().Build(chatClient, DocumentSummaryAgentName));
+
+        _registry.Register(DocumentRewriteAgentName, (sp, chatClient) =>
+            new DocumentRewriteAgent().Build(chatClient, DocumentRewriteAgentName));
 
         _registry.Register(DocumentEditAgentName, (sp, chatClient) =>
             new DocumentEditAgent().Build(chatClient, DocumentEditAgentName, docEditTool));
@@ -172,6 +183,9 @@ public sealed class ChatAgentFactory
             tools,
             docSearchTool,
             docEditTool,
+            dbFactory,
+            _attachmentStore,
+            _documentTextExtractor,
             GetConversationIdGuid,
             canViewCompensationAsync: () => IsPrivileged(),
             isPrivilegedAsync: () => IsPrivileged(),
