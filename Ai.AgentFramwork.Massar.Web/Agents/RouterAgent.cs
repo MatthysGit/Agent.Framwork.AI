@@ -57,6 +57,15 @@ public sealed class RouterAgent
                 Reason: "Hard-guard: spreadsheet analytics intent detected.");
         }
 
+        // Hard guard: document summary intent
+        if (IsDocumentSummaryIntent(userMessage))
+        {
+            return new RouteResult(
+                Mode: "agent",
+                Agent: ChatAgentFactory.DocumentSummaryAgentName,
+                Reason: "Hard-guard: document summary request detected.");
+        }
+
         // Hard guard: executive / leadership summary intent
         if (IsExecutiveInsightIntent(userMessage))
         {
@@ -195,6 +204,7 @@ Schema (return exactly this shape):
   \"agent\": \"{{{ChatAgentFactory.DataExplorerAgentName}}}\" 
         | \"{{{ChatAgentFactory.SqlAgentName}}}\" 
         | \"{{{ChatAgentFactory.DocumentSearchAgentName}}}\" 
+        | \"{{{ChatAgentFactory.DocumentSummaryAgentName}}}\"
         | \"{{{ChatAgentFactory.DocumentEditAgentName}}}\"
         | \"{{{ChatAgentFactory.ExcelAnalyticsAgentName}}}\"
         | \"{{{ChatAgentFactory.ExecutiveInsightAgentName}}}\"
@@ -217,6 +227,11 @@ A) DOCUMENT EDIT INTENT (HIGHEST PRIORITY):
 A2) EXCEL / SPREADSHEET ANALYTICS INTENT (HIGH PRIORITY, ONLY IF NOT EDITING):
 - If the user asks to analyze a spreadsheet (insights, trends, KPIs, dashboard, anomalies, top items, financial/sales analysis),
   choose agent \"{{{ChatAgentFactory.ExcelAnalyticsAgentName}}}\".
+
+A2.5) DOCUMENT SUMMARY INTENT:
+- If the user asks to summarize a document/file/report/policy/contract/manual/meeting notes,
+  or asks for executive summary, section summaries, action summary, or risks/decisions/next steps
+  for a document, choose agent "{{{ChatAgentFactory.DocumentSummaryAgentName}}}".
 
 A3) EXECUTIVE INSIGHT INTENT:
 - If the user asks for executive summary, leadership summary, management summary, business overview,
@@ -342,6 +357,9 @@ User message:
             if (IsExcelAnalyticsIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.ExcelAnalyticsAgentName, "Hard-guard: spreadsheet analytics intent detected.");
 
+            if (IsDocumentSummaryIntent(userMessage))
+                return new RouteResult("agent", ChatAgentFactory.DocumentSummaryAgentName, "Hard-guard: document summary request detected.");
+
             if (IsExecutiveInsightIntent(userMessage))
                 return new RouteResult("agent", ChatAgentFactory.ExecutiveInsightAgentName, "Hard-guard: executive insight request detected.");
 
@@ -381,6 +399,53 @@ User message:
         {
             return new RouteResult("agent", ChatAgentFactory.LlmChatAgentName, "Router output not valid JSON; fallback.");
         }
+    }
+
+
+    private static bool IsDocumentSummaryIntent(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        if (IsDocumentEditIntent(message) || IsExcelAnalyticsIntent(message))
+            return false;
+
+        var t = message.Trim().ToLowerInvariant();
+
+        var summaryCue =
+            t.Contains("summarize") ||
+            t.Contains("summary") ||
+            t.Contains("executive summary") ||
+            t.Contains("section summary") ||
+            t.Contains("section summaries") ||
+            t.Contains("action summary") ||
+            t.Contains("next steps") ||
+            t.Contains("risks") ||
+            t.Contains("decisions") ||
+            t.Contains("key decisions") ||
+            t.Contains("document summary") ||
+            t.Contains("summarise");
+
+        if (!summaryCue)
+            return false;
+
+        var docCue =
+            t.Contains("document") ||
+            t.Contains("file") ||
+            t.Contains("report") ||
+            t.Contains("policy") ||
+            t.Contains("contract") ||
+            t.Contains("agreement") ||
+            t.Contains("proposal") ||
+            t.Contains("manual") ||
+            t.Contains("meeting notes") ||
+            t.Contains("minutes") ||
+            t.Contains("memo") ||
+            t.Contains("doc") ||
+            t.Contains("pdf") ||
+            t.Contains("word");
+
+        return docCue;
     }
 
     private static bool IsExplicitSqlRetrievalIntent(string? message)

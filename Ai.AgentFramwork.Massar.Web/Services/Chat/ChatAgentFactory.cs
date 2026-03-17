@@ -26,6 +26,7 @@ public sealed class ChatAgentFactory
     public const string PpiAgentName = "PpiAgent";
     public const string ExcelAnalyticsAgentName = "ExcelAnalyticsAgent";
     public const string DataExplorerAgentName = "DataExplorerAgent";
+    public const string DocumentSummaryAgentName = "DocumentSummaryAgent";
     public const string ExecutiveInsightAgentName = "ExecutiveInsightAgent";
     public const string DataIntelligenceAgentName = "DataIntelligenceAgent";
     public const string ForecastingAgentName = "ForecastingAgent";
@@ -93,6 +94,9 @@ public sealed class ChatAgentFactory
 
         _registry.Register(DocumentSearchAgentName, (sp, chatClient) =>
             new DocumentSearchAgent().Build(chatClient, DocumentSearchAgentName, docSearchToolWrapper));
+
+        _registry.Register(DocumentSummaryAgentName, (sp, chatClient) =>
+            new DocumentSummaryAgent().Build(chatClient, DocumentSummaryAgentName));
 
         _registry.Register(DocumentEditAgentName, (sp, chatClient) =>
             new DocumentEditAgent().Build(chatClient, DocumentEditAgentName, docEditTool));
